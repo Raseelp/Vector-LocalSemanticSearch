@@ -132,6 +132,14 @@ class NativeController extends GetxController {
   }
 
   Future<void> searchUsingText({required bool isSearchUsingImage}) async {
+    // A blank text query still tokenizes and runs - CLIP just has nothing
+    // meaningful to match against, so results end up arbitrary with no
+    // indication why. Nothing to check for the image-search path; a null
+    // uri from a cancelled picker is already handled below.
+    if (!isSearchUsingImage && searchTextController.text.trim().isEmpty) {
+      return;
+    }
+
     try {
       isSearching = true;
       error = '';
@@ -358,13 +366,6 @@ class NativeController extends GetxController {
     await addIndexedFolderToDb(indexedFolder: scanResult, folderId: folderId);
     await getTotalEmbeddings();
     await getAllFoldersList();
-  }
-
-  Future<void> listenProgress() async {
-    NativeServices().scanProgressStream().listen((data) {
-      IndexedFolder.fromMap(data);
-      update();
-    });
   }
 
   Future<void> getTotalEmbeddings() async {

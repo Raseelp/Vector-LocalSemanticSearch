@@ -897,14 +897,33 @@ class _PermissionsCard extends StatefulWidget {
   State<_PermissionsCard> createState() => _PermissionsCardState();
 }
 
-class _PermissionsCardState extends State<_PermissionsCard> {
+class _PermissionsCardState extends State<_PermissionsCard>
+    with WidgetsBindingObserver {
   bool? _photosGranted;
   bool? _videosGranted;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _refresh();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // This card is kept alive for the whole app session (the tabs use an
+    // IndexedStack), so without this it would never notice permissions
+    // granted or revoked from system Settings while the app was
+    // backgrounded - it would just show stale status indefinitely.
+    if (state == AppLifecycleState.resumed) {
+      _refresh();
+    }
   }
 
   Future<void> _refresh() async {
