@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.Uri
 import org.pytorch.IValue
 import org.pytorch.Module
-import org.pytorch.PyTorchAndroid
 import org.pytorch.Tensor
 import com.facebook.soloader.SoLoader
 import dev.twentyonevision.app.embedder.models.ModelCatalog
@@ -55,13 +54,6 @@ class EmbeddingEngine(
 
     init {
         SoLoader.init(context, false)
-
-        // Leave one core free for the UI/system rather than saturating all
-        // of them during a scan.
-        val threads = (Runtime.getRuntime().availableProcessors() - 1).coerceAtLeast(1)
-        PyTorchAndroid.setNumThreads(threads)
-        Log.d(TAG, "PyTorch thread count set to $threads")
-
         store = EmbeddingStore(context)
     }
 
