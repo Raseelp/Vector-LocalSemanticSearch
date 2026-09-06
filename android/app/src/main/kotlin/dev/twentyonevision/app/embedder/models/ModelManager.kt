@@ -37,7 +37,20 @@ class ModelManager(private val context: Context) {
     fun isModelVerified(model: RemoteModel): Boolean {
         val file = localFile(model)
         if (!file.exists() || file.length() != model.sizeBytes) return false
-        return prefs.getBoolean(verifiedKey(model), false)
+
+        if (prefs.getBoolean(verifiedKey(model), false)) return true
+
+        // Right size but not flagged verified - e.g. the file was copied
+        // into place directly (local testing) instead of coming through
+        // downloadOne(). Hash it once to confirm, and cache the result so
+        // this only costs anything the first time. Callers on the UI
+        // thread must not call this before a download has ever run without
+        // going through a background thread first - this can be slow.
+        val matches = sha256Of(file).equals(model.sha256, ignoreCase = true)
+        if (matches) {
+            prefs.edit().putBoolean(verifiedKey(model), true).apply()
+        }
+        return matches
     }
 
     fun areModelsReady(): Boolean = ModelCatalog.MODELS.all { isModelVerified(it) }

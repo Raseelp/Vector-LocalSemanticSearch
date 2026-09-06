@@ -109,57 +109,68 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "areModelsReady" -> {
-                    result.success(modelManager.areModelsReady())
+                    // isModelVerified() can occasionally hash a whole model
+                    // file (see ModelManager) - never call it on the UI thread.
+                    executor.execute {
+                        val ready = modelManager.areModelsReady()
+                        runOnUiThread { result.success(ready) }
+                    }
                 }
 
                 "getModelInfo" -> {
-                    val statuses = modelManager.getModelStatuses().map {
-                        mapOf(
-                            "id"         to it.id,
-                            "fileName"   to it.fileName,
-                            "sizeBytes"  to it.sizeBytes,
-                            "downloaded" to it.downloaded,
-                            "verified"   to it.verified
-                        )
+                    executor.execute {
+                        val statuses = modelManager.getModelStatuses().map {
+                            mapOf(
+                                "id"         to it.id,
+                                "fileName"   to it.fileName,
+                                "sizeBytes"  to it.sizeBytes,
+                                "downloaded" to it.downloaded,
+                                "verified"   to it.verified
+                            )
+                        }
+                        runOnUiThread { result.success(statuses) }
                     }
-                    result.success(statuses)
                 }
 
                 "downloadModels" -> {
-                    if (modelManager.areModelsReady()) {
-                        result.success(true)
-                        return@setMethodCallHandler
-                    }
-                    if (!modelManager.hasEnoughFreeSpace()) {
-                        result.error(
-                            "INSUFFICIENT_STORAGE",
-                            "Not enough free space to download the models",
-                            null
-                        )
-                        return@setMethodCallHandler
-                    }
-
-                    downloadExecutor.execute {
-                        try {
-                            modelManager.downloadAll { progress ->
-                                runOnUiThread {
-                                    modelDownloadSink?.success(
-                                        mapOf(
-                                            "modelId"                to progress.modelId,
-                                            "modelFileName"          to progress.modelFileName,
-                                            "bytesForModel"          to progress.bytesForModel,
-                                            "totalBytesForModel"     to progress.totalBytesForModel,
-                                            "overallBytesDownloaded" to progress.overallBytesDownloaded,
-                                            "overallTotalBytes"      to progress.overallTotalBytes,
-                                            "done"                   to progress.done
-                                        )
-                                    )
-                                }
-                            }
-                            runOnUiThread { result.success(modelManager.areModelsReady()) }
-                        } catch (e: Exception) {
+                    executor.execute {
+                        if (modelManager.areModelsReady()) {
+                            runOnUiThread { result.success(true) }
+                            return@execute
+                        }
+                        if (!modelManager.hasEnoughFreeSpace()) {
                             runOnUiThread {
-                                result.error("DOWNLOAD_FAILED", e.message, null)
+                                result.error(
+                                    "INSUFFICIENT_STORAGE",
+                                    "Not enough free space to download the models",
+                                    null
+                                )
+                            }
+                            return@execute
+                        }
+
+                        downloadExecutor.execute {
+                            try {
+                                modelManager.downloadAll { progress ->
+                                    runOnUiThread {
+                                        modelDownloadSink?.success(
+                                            mapOf(
+                                                "modelId"                to progress.modelId,
+                                                "modelFileName"          to progress.modelFileName,
+                                                "bytesForModel"          to progress.bytesForModel,
+                                                "totalBytesForModel"     to progress.totalBytesForModel,
+                                                "overallBytesDownloaded" to progress.overallBytesDownloaded,
+                                                "overallTotalBytes"      to progress.overallTotalBytes,
+                                                "done"                   to progress.done
+                                            )
+                                        )
+                                    }
+                                }
+                                runOnUiThread { result.success(modelManager.areModelsReady()) }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    result.error("DOWNLOAD_FAILED", e.message, null)
+                                }
                             }
                         }
                     }
