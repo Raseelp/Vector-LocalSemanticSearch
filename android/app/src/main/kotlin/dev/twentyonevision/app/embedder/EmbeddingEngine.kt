@@ -30,6 +30,15 @@ class EmbeddingEngine(
     private var textModule: Module? = null
     private val store: EmbeddingStore
 
+    // A single Module instance isn't safe to call forward() on from two
+    // threads at once. Search can now run at the same time as a scan (see
+    // MainActivity), and image-based search shares this exact vision
+    // module with scanning - so every actual forward() call on it goes
+    // through this lock. Only the call itself is locked, not the tensor
+    // prep around it, so a wait here is short: at most one batch's worth
+    // of inference time, not the other side's whole operation.
+    private val visionLock = Any()
+
     private var lastEmit: Long = 0L
     private var startTimeMs: Long = 0L
 
@@ -445,7 +454,9 @@ class EmbeddingEngine(
         if (tensors.size == 1) {
             return listOf(
                 try {
-                    vision.forward(IValue.from(tensors[0])).toTensor().dataAsFloatArray
+                    synchronized(visionLock) {
+                        vision.forward(IValue.from(tensors[0])).toTensor().dataAsFloatArray
+                    }
                 } catch (e: Exception) {
                     null
                 }
@@ -462,7 +473,9 @@ class EmbeddingEngine(
                 batchedData,
                 longArrayOf(tensors.size.toLong(), 3L, VISION_INPUT_SIZE.toLong(), VISION_INPUT_SIZE.toLong())
             )
-            val output = vision.forward(IValue.from(batchedTensor)).toTensor().dataAsFloatArray
+            val output = synchronized(visionLock) {
+                vision.forward(IValue.from(batchedTensor)).toTensor().dataAsFloatArray
+            }
             val embeddingDim = output.size / tensors.size
             (0 until tensors.size).map { i -> output.copyOfRange(i * embeddingDim, (i + 1) * embeddingDim) }
         } catch (e: Exception) {
@@ -474,7 +487,9 @@ class EmbeddingEngine(
 
         return tensors.map { t ->
             try {
-                vision.forward(IValue.from(t)).toTensor().dataAsFloatArray
+                synchronized(visionLock) {
+                    vision.forward(IValue.from(t)).toTensor().dataAsFloatArray
+                }
             } catch (e: Exception) {
                 null
             }
@@ -666,10 +681,12 @@ class EmbeddingEngine(
         val tensor = ImagePreprocessor.loadAsTensor(context, uri)
             ?: throw Exception("Failed to load image")
 
-        return visionModule!!
-            .forward(IValue.from(tensor))
-            .toTensor()
-            .dataAsFloatArray
+        return synchronized(visionLock) {
+            visionModule!!
+                .forward(IValue.from(tensor))
+                .toTensor()
+                .dataAsFloatArray
+        }
     }
     fun searchByText(
         textEmbedding: FloatArray,

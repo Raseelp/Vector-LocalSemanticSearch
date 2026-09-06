@@ -38,6 +38,11 @@ class MainActivity : FlutterActivity() {
     // unrelated calls (e.g. loading an already-cached thumbnail) sitting
     // behind it on the shared executor.
     private val downloadExecutor = Executors.newSingleThreadExecutor()
+    // Search gets its own thread too, so it doesn't sit queued behind a
+    // scan that can run for an hour or more. EmbeddingEngine/EmbeddingStore
+    // are built to allow this now (locks around the shared vision module
+    // and the on-disk store) - see their comments.
+    private val searchExecutor = Executors.newSingleThreadExecutor()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -227,7 +232,7 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
 
-                    executor.execute {
+                    searchExecutor.execute {
                         try {
                             val textEmbedding = embeddingEngine.encodeText(tokens.toIntArray())
                             val results = embeddingEngine.searchByText(textEmbedding, topK)
@@ -262,7 +267,7 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
 
-                    executor.execute {
+                    searchExecutor.execute {
                         try {
                             val embedding = embeddingEngine.encodeImageFromUri(uriString)
                             val results   = embeddingEngine.searchByImageEmbedding(embedding, topK)
@@ -297,7 +302,7 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
 
-                    executor.execute {
+                    searchExecutor.execute {
                         try {
                             val uri         = android.net.Uri.parse(uriString)
                             val inputStream = contentResolver.openInputStream(uri)
@@ -335,7 +340,7 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
 
-                    executor.execute {
+                    searchExecutor.execute {
                         try {
                             val uri       = android.net.Uri.parse(uriString)
                             val retriever = MediaMetadataRetriever()
@@ -375,7 +380,7 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
 
-                    executor.execute {
+                    searchExecutor.execute {
                         try {
                             val uri = android.net.Uri.parse(uriString)
 

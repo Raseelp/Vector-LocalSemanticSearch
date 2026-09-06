@@ -157,12 +157,59 @@ class _SearchTabContent extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _SearchComposer(controller: controller),
+          if (controller.isScanning) ...[
+            const SizedBox(height: 18),
+            _ScanningHintBanner(totalEmbeddings: controller.totalEmbeddings),
+          ],
           if (controller.error.isNotEmpty) ...[
             const SizedBox(height: 18),
             _ErrorBanner(message: controller.error),
           ],
           const SizedBox(height: 22),
           const SearchResultsView(),
+        ],
+      ),
+    );
+  }
+}
+
+// Search used to just sit queued behind a scan - now it runs concurrently,
+// but nobody knows that unless we say so, and people who already sat
+// through a big model download aren't likely to also wait out an hour-long
+// scan on faith alone.
+class _ScanningHintBanner extends StatelessWidget {
+  const _ScanningHintBanner({required this.totalEmbeddings});
+
+  final int totalEmbeddings;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceAccent,
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(
+            Icons.search_rounded,
+            color: AppColors.primarybuttonColor,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              totalEmbeddings > 0
+                  ? 'Search works right now — $totalEmbeddings indexed so far while the rest finishes.'
+                  : 'Search will start returning results as soon as the first files are indexed.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: AppColors.primarybuttonColor,
+                fontWeight: FontWeight.w600,
+                height: 1.35,
+              ),
+            ),
+          ),
         ],
       ),
     );

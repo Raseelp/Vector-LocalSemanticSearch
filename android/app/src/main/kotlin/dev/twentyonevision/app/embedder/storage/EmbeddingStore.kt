@@ -19,6 +19,15 @@ class EmbeddingStore(private val context: Context) {
     @Volatile
     private var cachedRecords: List<EmbeddingRecord>? = null
 
+    // Guards every read and write below. Search can now run at the same
+    // time as a scan (its own thread - see MainActivity), and a search's
+    // readAll() racing a scan's appendBatch() on the same underlying file
+    // is exactly the kind of thing that corrupts data without ever
+    // throwing. A single lock keeps this simple and obviously correct;
+    // reads and writes are already fast, so there's no real cost to not
+    // letting two reads run truly in parallel.
+    private val lock = Any()
+
     companion object {
         private const val TAG = "EmbeddingStore"
         private const val MAGIC = 0x454D4244  // "EMBD"
@@ -47,12 +56,14 @@ class EmbeddingStore(private val context: Context) {
         require(record.embedding.size == EMBEDDING_DIM) {
             "Embedding must be $EMBEDDING_DIM dimensions"
         }
-        DataOutputStream(
-            BufferedOutputStream(FileOutputStream(storeFile, true))
-        ).use { out ->
-            writeRecord(out, record)
+        synchronized(lock) {
+            DataOutputStream(
+                BufferedOutputStream(FileOutputStream(storeFile, true))
+            ).use { out ->
+                writeRecord(out, record)
+            }
+            cachedRecords = null
         }
-        cachedRecords = null
     }
 
     fun appendBatch(records: List<EmbeddingRecord>) {
@@ -62,14 +73,16 @@ class EmbeddingStore(private val context: Context) {
                 "Embedding must be $EMBEDDING_DIM dimensions"
             }
         }
-        DataOutputStream(
-            BufferedOutputStream(FileOutputStream(storeFile, true))
-        ).use { out ->
-            for (record in records) {
-                writeRecord(out, record)
+        synchronized(lock) {
+            DataOutputStream(
+                BufferedOutputStream(FileOutputStream(storeFile, true))
+            ).use { out ->
+                for (record in records) {
+                    writeRecord(out, record)
+                }
             }
+            cachedRecords = null
         }
-        cachedRecords = null
     }
 
     private fun writeRecord(out: DataOutputStream, record: EmbeddingRecord) {
@@ -97,8 +110,8 @@ class EmbeddingStore(private val context: Context) {
     // Tolerates a truncated trailing record (process killed mid-append) by
     // keeping everything before it, and a bad header by quarantining the
     // file and starting fresh - either way, callers never crash on this.
-    fun readAll(): List<EmbeddingRecord> {
-        cachedRecords?.let { return it }
+    fun readAll(): List<EmbeddingRecord> = synchronized(lock) {
+        cachedRecords?.let { return@synchronized it }
 
         val records = mutableListOf<EmbeddingRecord>()
 
@@ -163,11 +176,11 @@ class EmbeddingStore(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "readAll: store unreadable (${e.message}), resetting", e)
             quarantineAndReset()
-            return emptyList()
+            return@synchronized emptyList()
         }
 
         cachedRecords = records
-        return records
+        records
     }
 
     private fun quarantineAndReset() {
@@ -180,8 +193,10 @@ class EmbeddingStore(private val context: Context) {
     }
 
     fun clear() {
-        storeFile.delete()
-        createNewStore()
+        synchronized(lock) {
+            storeFile.delete()
+            createNewStore()
+        }
     }
 
     fun countForFolder(folderId: String): Int =
@@ -190,28 +205,30 @@ class EmbeddingStore(private val context: Context) {
     // Writes to a temp file and renames over the original so a crash
     // mid-write can't leave embeddings.bin half-written.
     fun deleteByFolderId(folderId: String) {
-        val remaining = readAll().filter { it.folderId != folderId }
-        val tempFile = File(context.filesDir, "embeddings.bin.tmp")
+        synchronized(lock) {
+            val remaining = readAll().filter { it.folderId != folderId }
+            val tempFile = File(context.filesDir, "embeddings.bin.tmp")
 
-        DataOutputStream(
-            BufferedOutputStream(FileOutputStream(tempFile, false))
-        ).use { out ->
-            out.writeInt(MAGIC)
-            out.writeInt(VERSION)
-            out.writeInt(EMBEDDING_DIM)
+            DataOutputStream(
+                BufferedOutputStream(FileOutputStream(tempFile, false))
+            ).use { out ->
+                out.writeInt(MAGIC)
+                out.writeInt(VERSION)
+                out.writeInt(EMBEDDING_DIM)
 
-            for (record in remaining) {
-                writeRecord(out, record)
+                for (record in remaining) {
+                    writeRecord(out, record)
+                }
             }
-        }
 
-        if (!tempFile.renameTo(storeFile)) {
-            // Some filesystems refuse to rename over an existing file -
-            // fall back to delete-then-rename.
-            storeFile.delete()
-            tempFile.renameTo(storeFile)
-        }
+            if (!tempFile.renameTo(storeFile)) {
+                // Some filesystems refuse to rename over an existing file -
+                // fall back to delete-then-rename.
+                storeFile.delete()
+                tempFile.renameTo(storeFile)
+            }
 
-        cachedRecords = null
+            cachedRecords = null
+        }
     }
 }
