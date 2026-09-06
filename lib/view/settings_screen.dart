@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:twentyonevision/controllers/native_controller.dart';
-import 'package:twentyonevision/models/indexed_folder_model.dart';
 import 'package:twentyonevision/models/model_status.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
@@ -62,43 +61,6 @@ class SettingsScreen extends StatelessWidget {
                         ],
                       ),
                       const SizedBox(height: AppSpacing.xl),
-                      const _GroupLabel('Library'),
-                      _GroupCard(
-                        children: [
-                          if (controller.allIndexedFoldersList.isEmpty)
-                            const _SettingsRow(
-                              icon: Icons.folder_off_outlined,
-                              title: 'No folders indexed yet',
-                            )
-                          else
-                            ...controller.allIndexedFoldersList.map(
-                              (f) => _FolderRow(folder: f, controller: controller),
-                            ),
-                          if (controller.isScanning)
-                            _SettingsRow(
-                              icon: Icons.sync_rounded,
-                              accentIcon: true,
-                              title: 'Indexing in progress',
-                              subtitle: 'Go back to see live progress',
-                              onTap: () => Navigator.of(context).pop(),
-                            )
-                          else ...[
-                            _SettingsRow(
-                              icon: Icons.travel_explore_rounded,
-                              accentIcon: true,
-                              title: 'Index my phone',
-                              onTap: () => _startDeviceScan(context, controller),
-                            ),
-                            _SettingsRow(
-                              icon: Icons.create_new_folder_outlined,
-                              accentIcon: true,
-                              title: 'Choose a folder',
-                              onTap: () => _startFolderScan(context, controller),
-                            ),
-                          ],
-                        ],
-                      ),
-                      const SizedBox(height: AppSpacing.xl),
                       const _GroupLabel('Search'),
                       _GroupCard(children: [_ResultsSlider(controller: controller)]),
                       const SizedBox(height: AppSpacing.xl),
@@ -146,27 +108,6 @@ class SettingsScreen extends StatelessWidget {
       },
     );
   }
-}
-
-// Both pop back to Home right after starting - the scan's own progress
-// only shows there, not in Settings, so there'd be nothing to look at by
-// staying on this screen.
-Future<void> _startDeviceScan(BuildContext context, NativeController controller) async {
-  final granted = await controller.requestMediaPermission(
-    contentMode: controller.selectedContentMode,
-  );
-  if (!granted) return;
-  controller.pickAndScanFolders(isScanEntirePhone: true);
-  if (context.mounted) Navigator.of(context).pop();
-}
-
-void _startFolderScan(BuildContext context, NativeController controller) {
-  // Not awaited - pickAndScanFolders doesn't resolve until the whole scan
-  // finishes, and this only needs to kick it off. The system folder picker
-  // it opens is its own overlay, so it still shows correctly on top of
-  // whichever screen ends up visible underneath.
-  controller.pickAndScanFolders(isScanEntirePhone: false);
-  Navigator.of(context).pop();
 }
 
 class _SettingsTopBar extends StatelessWidget {
@@ -239,7 +180,6 @@ class _SettingsRow extends StatelessWidget {
     this.subtitle,
     this.trailing,
     this.accentIcon = false,
-    this.onTap,
   });
 
   final IconData icon;
@@ -247,11 +187,10 @@ class _SettingsRow extends StatelessWidget {
   final String? subtitle;
   final Widget? trailing;
   final bool accentIcon;
-  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    final row = Padding(
+    return Padding(
       padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.md),
       child: Row(
         children: [
@@ -286,39 +225,6 @@ class _SettingsRow extends StatelessWidget {
           if (trailing != null) const SizedBox(width: AppSpacing.sm),
           if (trailing != null) trailing!,
         ],
-      ),
-    );
-
-    if (onTap == null) return row;
-    return InkWell(onTap: onTap, child: row);
-  }
-}
-
-class _FolderRow extends StatelessWidget {
-  const _FolderRow({required this.folder, required this.controller});
-
-  final IndexedFolder folder;
-  final NativeController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    return _SettingsRow(
-      icon: Icons.folder_outlined,
-      title: folder.path.isEmpty ? 'Unknown' : folder.path,
-      subtitle: '${folder.embedded} embeddings',
-      trailing: InkWell(
-        borderRadius: BorderRadius.circular(AppRadius.pill),
-        onTap: () => showConfirmDialog(
-          context,
-          title: 'Remove this folder?',
-          message: 'This forgets everything indexed from "${folder.path}".',
-          confirmLabel: 'Remove',
-          onConfirm: () => controller.deleteFolderById(id: folder.id),
-        ),
-        child: const Padding(
-          padding: EdgeInsets.all(AppSpacing.xs),
-          child: Icon(Icons.close_rounded, size: 16, color: AppColors.ink48),
-        ),
       ),
     );
   }
