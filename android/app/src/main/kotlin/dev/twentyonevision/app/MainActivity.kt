@@ -97,7 +97,14 @@ class MainActivity : FlutterActivity() {
                                             "elapsedMs" to progress.elapsedMs,
                                             "skipped"   to progress.skipped,
                                             "done"      to progress.done,
-                                            "path"      to progress.path
+                                            "path"      to progress.path,
+                                            "recentItems" to progress.recentItems.map {
+                                                mapOf(
+                                                    "uri" to it.uri,
+                                                    "isVideo" to it.isVideo,
+                                                    "timestampMs" to it.timestampMs
+                                                )
+                                            }
                                         )
                                     )
                                 }

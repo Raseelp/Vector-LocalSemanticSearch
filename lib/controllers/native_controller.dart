@@ -44,6 +44,22 @@ class NativeController extends GetxController {
   // scan's history like a cumulative average would be.
   double recentEmbeddingsPerSecond = 0;
   IndexedFolder? _previousProgress;
+
+  // "Recently indexed" strip: a small, bounded, newest-first list of files
+  // shown while a scan is running. Deliberately its own cache (not
+  // imageCache) - a concurrent search clears imageCache on every run (see
+  // searchUsingText), which would otherwise blank this strip mid-scan.
+  // Fetching is throttled on purpose: the scan can embed several files per
+  // progress tick, and fetching a thumbnail for every single one would
+  // compete with the scan itself for I/O/CPU. One fetch per tick keeps the
+  // strip feeling alive without adding meaningful load.
+  static const int _maxRecentThumbnails = 8;
+  static const Duration _recentThumbFetchThrottle = Duration(milliseconds: 900);
+  List<RecentEmbeddedItem> recentThumbnails = [];
+  final Map<String, Uint8List> recentThumbBytes = {};
+  final Set<String> _recentThumbInFlight = {};
+  DateTime? _lastRecentThumbFetch;
+
   final db = IndexedFolderDbHelper.instance;
   ImageMetadata selectedMetadata = ImageMetadata.empty();
 
@@ -172,6 +188,71 @@ class NativeController extends GetxController {
     return isVideo ? '$uri@$timestampMs' : uri;
   }
 
+  String _recentThumbKey(RecentEmbeddedItem item) {
+    return item.isVideo ? '${item.uri}@${item.timestampMs}' : item.uri;
+  }
+
+  // items is newest-first. Picks at most one not-yet-fetched item per
+  // throttle window rather than draining the whole list, so a fast scan
+  // can't turn this into a thumbnail-fetch flood.
+  void _maybeFetchNextRecentThumbnail(List<RecentEmbeddedItem> items) {
+    if (items.isEmpty) return;
+
+    final now = DateTime.now();
+    if (_lastRecentThumbFetch != null &&
+        now.difference(_lastRecentThumbFetch!) < _recentThumbFetchThrottle) {
+      return;
+    }
+
+    RecentEmbeddedItem? next;
+    for (final item in items) {
+      final key = _recentThumbKey(item);
+      if (!recentThumbBytes.containsKey(key) &&
+          !_recentThumbInFlight.contains(key)) {
+        next = item;
+        break;
+      }
+    }
+    if (next == null) return;
+
+    _lastRecentThumbFetch = now;
+    final item = next;
+    final key = _recentThumbKey(item);
+    _recentThumbInFlight.add(key);
+
+    _fetchRecentThumbnail(item, key);
+  }
+
+  Future<void> _fetchRecentThumbnail(RecentEmbeddedItem item, String key) async {
+    try {
+      final bytes = item.isVideo
+          ? await NativeServices().loadVideoThumbnail(
+              uri: item.uri,
+              timestampMs: item.timestampMs,
+            )
+          : await NativeServices().loadImageBytes(
+              uri: item.uri,
+              isCompressed: true,
+            );
+
+      recentThumbBytes[key] = bytes;
+      recentThumbnails.insert(0, item);
+      if (recentThumbnails.length > _maxRecentThumbnails) {
+        final removed = recentThumbnails.removeLast();
+        // Only drop the cached bytes if nothing else in the strip still
+        // needs them (same file could reappear if it hashes the same key).
+        if (!recentThumbnails.any((e) => _recentThumbKey(e) == _recentThumbKey(removed))) {
+          recentThumbBytes.remove(_recentThumbKey(removed));
+        }
+      }
+      update();
+    } catch (_) {
+      // Cosmetic feature - never worth surfacing an error for a missed thumbnail.
+    } finally {
+      _recentThumbInFlight.remove(key);
+    }
+  }
+
   Future<void> pickAndScanFolders({required bool isScanEntirePhone}) async {
     if (isScanning) return;
 
@@ -201,6 +282,10 @@ class NativeController extends GetxController {
     scanResult = IndexedFolder.empty();
     recentEmbeddingsPerSecond = 0;
     _previousProgress = null;
+    recentThumbnails = [];
+    recentThumbBytes.clear();
+    _recentThumbInFlight.clear();
+    _lastRecentThumbFetch = null;
     error = '';
     update();
 
@@ -219,6 +304,7 @@ class NativeController extends GetxController {
       }
       _previousProgress = newResult;
       scanResult = newResult;
+      _maybeFetchNextRecentThumbnail(newResult.recentItems);
 
       if (scanResult.done) {
         isScanning = false;

@@ -4,6 +4,28 @@ class IndexedFolderIdentity {
   static const device = '__device_scan__';
 }
 
+/// One file that just finished embedding - carried on live scan progress
+/// only, never persisted (see IndexedFolder.toMap).
+class RecentEmbeddedItem {
+  final String uri;
+  final bool isVideo;
+  final int timestampMs;
+
+  const RecentEmbeddedItem({
+    required this.uri,
+    required this.isVideo,
+    required this.timestampMs,
+  });
+
+  factory RecentEmbeddedItem.fromMap(Map<dynamic, dynamic> map) {
+    return RecentEmbeddedItem(
+      uri: map['uri'] ?? '',
+      isVideo: map['isVideo'] as bool? ?? false,
+      timestampMs: (map['timestampMs'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
 class IndexedFolder {
   final String id;
   final int total;
@@ -17,6 +39,10 @@ class IndexedFolder {
   /// Epoch millis of the last scan, used to sort the folders list.
   final int updatedAt;
 
+  /// Rolling window of recently-embedded files from live scan progress -
+  /// empty once loaded from the DB (see toMap, which doesn't persist it).
+  final List<RecentEmbeddedItem> recentItems;
+
   const IndexedFolder({
     required this.id,
     required this.total,
@@ -27,6 +53,7 @@ class IndexedFolder {
     required this.processed,
     required this.done,
     this.updatedAt = 0,
+    this.recentItems = const [],
   });
 
   factory IndexedFolder.fromMap(Map<dynamic, dynamic> map) {
@@ -40,6 +67,12 @@ class IndexedFolder {
       processed: map['processed'] ?? 0,
       done: map['done'] ?? false,
       updatedAt: (map['updatedAt'] as num?)?.toInt() ?? 0,
+      recentItems: (map['recentItems'] as List<dynamic>?)
+              ?.map(
+                (e) => RecentEmbeddedItem.fromMap(Map<dynamic, dynamic>.from(e as Map)),
+              )
+              .toList() ??
+          const [],
     );
   }
 
@@ -54,6 +87,7 @@ class IndexedFolder {
       processed: 0,
       done: false,
       updatedAt: 0,
+      recentItems: [],
     );
   }
 
@@ -80,6 +114,7 @@ class IndexedFolder {
     int? processed,
     bool? done,
     int? updatedAt,
+    List<RecentEmbeddedItem>? recentItems,
   }) {
     return IndexedFolder(
       id: id ?? this.id,
@@ -91,6 +126,7 @@ class IndexedFolder {
       processed: processed ?? this.processed,
       done: done ?? this.done,
       updatedAt: updatedAt ?? this.updatedAt,
+      recentItems: recentItems ?? this.recentItems,
     );
   }
 }

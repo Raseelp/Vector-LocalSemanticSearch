@@ -114,6 +114,8 @@ class _HomeTabContent extends StatelessWidget {
             ),
             embeddingsPerSecond: controller.recentEmbeddingsPerSecond,
             etaText: controller.scanEtaText,
+            recentThumbnails: controller.recentThumbnails,
+            recentThumbBytes: controller.recentThumbBytes,
             onIndexDevice: () async {
               final NativeController nativeController = Get.find();
               final granted = await nativeController.requestMediaPermission(
@@ -1057,6 +1059,8 @@ class _HeroCard extends StatelessWidget {
     required this.elapsedText,
     required this.embeddingsPerSecond,
     required this.etaText,
+    required this.recentThumbnails,
+    required this.recentThumbBytes,
     required this.onIndexDevice,
     required this.onChooseFolder,
     required this.onStopScanning,
@@ -1069,6 +1073,8 @@ class _HeroCard extends StatelessWidget {
   final String elapsedText;
   final double embeddingsPerSecond;
   final String? etaText;
+  final List<RecentEmbeddedItem> recentThumbnails;
+  final Map<String, Uint8List> recentThumbBytes;
   final VoidCallback onIndexDevice;
   final VoidCallback onChooseFolder;
   final VoidCallback onStopScanning;
@@ -1112,6 +1118,8 @@ class _HeroCard extends StatelessWidget {
                         elapsedText: elapsedText,
                         embeddingsPerSecond: embeddingsPerSecond,
                         etaText: etaText,
+                        recentThumbnails: recentThumbnails,
+                        recentThumbBytes: recentThumbBytes,
                         onStopScanning: onStopScanning,
                       );
                     }
@@ -1330,6 +1338,8 @@ class _HeroScanningActions extends StatelessWidget {
     required this.elapsedText,
     required this.embeddingsPerSecond,
     required this.etaText,
+    required this.recentThumbnails,
+    required this.recentThumbBytes,
     required this.onStopScanning,
   });
 
@@ -1338,6 +1348,8 @@ class _HeroScanningActions extends StatelessWidget {
   final String elapsedText;
   final double embeddingsPerSecond;
   final String? etaText;
+  final List<RecentEmbeddedItem> recentThumbnails;
+  final Map<String, Uint8List> recentThumbBytes;
   final VoidCallback onStopScanning;
 
   @override
@@ -1362,6 +1374,8 @@ class _HeroScanningActions extends StatelessWidget {
       skipped: scanResult.skipped,
       embeddingsPerSecond: embeddingsPerSecond,
       etaText: etaText,
+      recentThumbnails: recentThumbnails,
+      recentThumbBytes: recentThumbBytes,
     );
     final controlPanel = _HeroScanControlPanel(
       elapsedText: elapsedText.isEmpty ? '0 Seconds' : elapsedText,
@@ -1395,6 +1409,8 @@ class _HeroProgressPanel extends StatelessWidget {
     required this.skipped,
     required this.embeddingsPerSecond,
     required this.etaText,
+    required this.recentThumbnails,
+    required this.recentThumbBytes,
   });
 
   final double progress;
@@ -1405,6 +1421,8 @@ class _HeroProgressPanel extends StatelessWidget {
   final String processedLabel;
   final int embedded;
   final int skipped;
+  final List<RecentEmbeddedItem> recentThumbnails;
+  final Map<String, Uint8List> recentThumbBytes;
 
   String get _speedLabel {
     if (embeddingsPerSecond <= 0) return 'measuring speed...';
@@ -1516,6 +1534,23 @@ class _HeroProgressPanel extends StatelessWidget {
                 ),
             ],
           ),
+          if (recentThumbnails.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text(
+              'Just indexed',
+              style: TextStyle(
+                color: AppColors.textPrimary.withValues(alpha: 0.6),
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.3,
+              ),
+            ),
+            const SizedBox(height: 6),
+            _RecentlyIndexedStrip(
+              items: recentThumbnails,
+              thumbBytes: recentThumbBytes,
+            ),
+          ],
           const SizedBox(height: 8),
           Text(
             'One-time step — search stays instant once this finishes.',
@@ -1648,6 +1683,145 @@ class _HeroScanControlPanel extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// Horizontal strip of the most-recently embedded files, newest first. Each
+// tile pop-in animates exactly once, the moment its key first enters the
+// list - see _RecentThumbTile - so re-rebuilds of tiles already on screen
+// never re-trigger it.
+class _RecentlyIndexedStrip extends StatelessWidget {
+  const _RecentlyIndexedStrip({
+    required this.items,
+    required this.thumbBytes,
+  });
+
+  final List<RecentEmbeddedItem> items;
+  final Map<String, Uint8List> thumbBytes;
+
+  String _keyFor(RecentEmbeddedItem item) =>
+      item.isVideo ? '${item.uri}@${item.timestampMs}' : item.uri;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 56,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        physics: const BouncingScrollPhysics(),
+        itemCount: items.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final item = items[index];
+          final key = _keyFor(item);
+          return _RecentThumbTile(
+            key: ValueKey(key),
+            bytes: thumbBytes[key],
+            isVideo: item.isVideo,
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _RecentThumbTile extends StatefulWidget {
+  const _RecentThumbTile({
+    super.key,
+    required this.bytes,
+    required this.isVideo,
+  });
+
+  final Uint8List? bytes;
+  final bool isVideo;
+
+  @override
+  State<_RecentThumbTile> createState() => _RecentThumbTileState();
+}
+
+class _RecentThumbTileState extends State<_RecentThumbTile>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _fade;
+  late final Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    // Runs once when this tile (a fresh ValueKey) first enters the tree -
+    // an existing tile that just gets repositioned is never recreated, so
+    // it never re-plays this.
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 380),
+    );
+    _fade = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
+    _scale = Tween<double>(begin: 0.7, end: 1.0).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeOutBack),
+    );
+    _controller.forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _fade,
+      child: ScaleTransition(
+        scale: _scale,
+        child: Container(
+          width: 56,
+          height: 56,
+          decoration: BoxDecoration(
+            color: AppColors.textPrimary.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.5),
+              width: 1.5,
+            ),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12.5),
+            child: widget.bytes == null
+                ? const Center(
+                    child: Icon(
+                      Icons.image_outlined,
+                      size: 18,
+                      color: AppColors.textSecondary,
+                    ),
+                  )
+                : Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Image.memory(
+                        widget.bytes!,
+                        fit: BoxFit.cover,
+                        // Decode at the tile's actual size, not the source
+                        // photo's full resolution - keeps this cheap enough
+                        // to not compete with the scan for CPU.
+                        cacheWidth: 112,
+                        cacheHeight: 112,
+                      ),
+                      if (widget.isVideo)
+                        Container(
+                          color: Colors.black.withValues(alpha: 0.18),
+                          child: const Icon(
+                            Icons.play_arrow_rounded,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                        ),
+                    ],
+                  ),
+          ),
+        ),
       ),
     );
   }

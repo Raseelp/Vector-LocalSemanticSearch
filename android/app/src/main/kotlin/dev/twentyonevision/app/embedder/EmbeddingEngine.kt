@@ -45,6 +45,17 @@ class EmbeddingEngine(
     @Volatile
     private var isCancelled = false
 
+    // Small rolling window of the most-recently embedded files, newest
+    // first - feeds the "recently indexed" strip in the UI. Only ever
+    // touched from the scan's own thread, same as lastEmit/startTimeMs
+    // above, so it needs no locking of its own.
+    private val recentItems = ArrayDeque<RecentEmbeddedItem>()
+
+    private fun recordRecent(item: RecentEmbeddedItem) {
+        recentItems.addFirst(item)
+        while (recentItems.size > RECENT_WINDOW_SIZE) recentItems.removeLast()
+    }
+
     companion object {
         private const val TAG = "EmbeddingEngine"
         private const val PROGRESS_INTERVAL_MS = 500L
@@ -54,6 +65,9 @@ class EmbeddingEngine(
         // not measured against real devices yet.
         private const val INFERENCE_BATCH_SIZE = 4
         private const val PREP_THREAD_COUNT = 2
+
+        // How many recently-embedded files to remember for the UI strip.
+        private const val RECENT_WINDOW_SIZE = 10
 
         // Every image/frame tensor is always exactly 3x224x224 - fixed by
         // ImagePreprocessor - so batching can rely on this instead of
@@ -116,6 +130,7 @@ class EmbeddingEngine(
         isCancelled = false
         startTimeMs = System.currentTimeMillis()
         lastEmit = startTimeMs
+        recentItems.clear()
         Log.d(TAG, "embedImages: start — mode=$mode contentMode=$contentMode")
 
         ensureModelsLoaded()
@@ -301,6 +316,13 @@ class EmbeddingEngine(
                                 )
                             )
                             embedded++
+                            recordRecent(
+                                RecentEmbeddedItem(
+                                    uri = img.uri.toString(),
+                                    isVideo = false,
+                                    timestampMs = 0L
+                                )
+                            )
                             if (batch.size >= batchSize) {
                                 store.appendBatch(batch)
                                 batch.clear()
@@ -348,6 +370,13 @@ class EmbeddingEngine(
                             batch.addAll(frameRecords)
                             existingHashes.add(hash)
                             embedded += frameRecords.size
+                            recordRecent(
+                                RecentEmbeddedItem(
+                                    uri = video.uri.toString(),
+                                    isVideo = true,
+                                    timestampMs = frameRecords.first().timestampMs
+                                )
+                            )
 
                             if (batch.size >= batchSize) {
                                 store.appendBatch(batch)
@@ -376,7 +405,8 @@ class EmbeddingEngine(
                 skipped = skipped,
                 elapsedMs = elapsed,
                 done = true,
-                path = label
+                path = label,
+                recentItems = recentItems.toList()
             )
         )
 
@@ -769,7 +799,8 @@ class EmbeddingEngine(
                     skipped   = skipped,
                     elapsedMs = now - startTimeMs,
                     done      = false,
-                    path      = path
+                    path      = path,
+                    recentItems = recentItems.toList()
                 )
             )
             lastEmit = now
