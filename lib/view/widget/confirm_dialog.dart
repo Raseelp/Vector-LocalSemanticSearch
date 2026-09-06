@@ -22,7 +22,7 @@ Future<void> showConfirmDialog(
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppRadius.lg),
       ),
-      insetPadding: const EdgeInsets.symmetric(horizontal: 48),
+      insetPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.xxxl),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 300),
         child: Column(

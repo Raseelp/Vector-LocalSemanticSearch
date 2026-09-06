@@ -104,7 +104,7 @@ class _AttachedImageChip extends StatelessWidget {
     return Row(
       children: [
         ClipRRect(
-          borderRadius: BorderRadius.circular(AppRadius.sm),
+          borderRadius: BorderRadius.circular(AppRadius.md),
           child: SizedBox(
             width: 32,
             height: 32,

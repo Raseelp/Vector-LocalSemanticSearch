@@ -169,73 +169,179 @@ class _PillAction extends StatelessWidget {
   }
 }
 
+const _scopeOrder = [ContentMode.images, ContentMode.both, ContentMode.videos];
+
+IconData _contentModeIcon(ContentMode mode) {
+  switch (mode) {
+    case ContentMode.images:
+      return Icons.image_outlined;
+    case ContentMode.videos:
+      return Icons.videocam_outlined;
+    case ContentMode.both:
+      return Icons.auto_awesome_mosaic_outlined;
+  }
+}
+
+String _contentModeLabel(ContentMode mode) {
+  switch (mode) {
+    case ContentMode.images:
+      return 'images only';
+    case ContentMode.videos:
+      return 'videos only';
+    case ContentMode.both:
+      return 'images and videos';
+  }
+}
+
+// A bordered pill with a dropdown chevron, not a flat-filled chip - the
+// chevron is what reads as "tap to pick" at a glance, the same signal a
+// native select control gives. Tapping opens a proper sheet with all three
+// options spelled out, rather than blindly cycling through them on tap.
 class _ScanScopeChip extends StatelessWidget {
   const _ScanScopeChip({required this.controller, this.locked = false});
 
   final NativeController controller;
   final bool locked;
 
-  IconData get _icon {
-    switch (controller.selectedContentMode) {
-      case ContentMode.images:
-        return Icons.image_outlined;
-      case ContentMode.videos:
-        return Icons.videocam_outlined;
-      case ContentMode.both:
-        return Icons.auto_awesome_mosaic_outlined;
-    }
-  }
-
-  String get _label {
-    switch (controller.selectedContentMode) {
-      case ContentMode.images:
-        return 'images only';
-      case ContentMode.videos:
-        return 'videos only';
-      case ContentMode.both:
-        return 'images and videos';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
+    final mode = controller.selectedContentMode;
+
     return Opacity(
       opacity: locked ? 0.5 : 1,
       child: Align(
-        child: InkWell(
-          borderRadius: BorderRadius.circular(AppRadius.pill),
-          onTap: locked ? null : controller.cycleContentMode,
-          child: Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.base,
-              vertical: AppSpacing.sm,
-            ),
-            decoration: BoxDecoration(
-              color: AppColors.parchment,
-              borderRadius: BorderRadius.circular(AppRadius.pill),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(_icon, size: 15, color: AppColors.ink48),
-                const SizedBox(width: AppSpacing.xs),
-                Flexible(
-                  child: Text(
-                    'Next scan: $_label',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodySmall?.copyWith(color: AppColors.ink80),
-                  ),
-                ),
-                if (!locked) ...[
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(AppRadius.pill),
+            onTap: locked ? null : () => _showScopePicker(context, controller),
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.base,
+                vertical: AppSpacing.sm,
+              ),
+              decoration: BoxDecoration(
+                color: AppColors.canvas,
+                borderRadius: BorderRadius.circular(AppRadius.pill),
+                border: Border.all(color: AppColors.hairline),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(_contentModeIcon(mode), size: 15, color: AppColors.primary),
                   const SizedBox(width: AppSpacing.xs),
-                  const Icon(Icons.sync_alt_rounded, size: 14, color: AppColors.ink48),
+                  Flexible(
+                    child: Text(
+                      'Next scan: ${_contentModeLabel(mode)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.copyWith(color: AppColors.ink80),
+                    ),
+                  ),
+                  if (!locked) ...[
+                    const SizedBox(width: AppSpacing.xs),
+                    const Icon(Icons.expand_more_rounded, size: 16, color: AppColors.ink48),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+void _showScopePicker(BuildContext context, NativeController controller) {
+  showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: Colors.transparent,
+    builder: (_) => _ScopeSheet(controller: controller),
+  );
+}
+
+class _ScopeSheet extends StatelessWidget {
+  const _ScopeSheet({required this.controller});
+
+  final NativeController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(AppSpacing.xl, 0, AppSpacing.xl, AppSpacing.xl),
+        child: Container(
+          decoration: BoxDecoration(
+            color: AppColors.canvas,
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(AppSpacing.base),
+                child: Text(
+                  'What should the next scan include?',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+              const Divider(height: 1, color: AppColors.hairline),
+              for (final mode in _scopeOrder) ...[
+                if (mode != _scopeOrder.first)
+                  const Divider(height: 1, color: AppColors.dividerSoft),
+                _ScopeOption(
+                  mode: mode,
+                  selected: controller.selectedContentMode == mode,
+                  onTap: () {
+                    controller.toggleSelectedContentMode(contentMode: mode);
+                    Navigator.of(context).pop();
+                  },
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ScopeOption extends StatelessWidget {
+  const _ScopeOption({required this.mode, required this.selected, required this.onTap});
+
+  final ContentMode mode;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.md),
+        child: Row(
+          children: [
+            Icon(
+              _contentModeIcon(mode),
+              size: 18,
+              color: selected ? AppColors.primary : AppColors.ink48,
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Text(
+                _contentModeLabel(mode),
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  color: selected ? AppColors.primary : AppColors.ink,
+                ),
+              ),
+            ),
+            if (selected)
+              const Icon(Icons.check_rounded, size: 18, color: AppColors.primary),
+          ],
         ),
       ),
     );

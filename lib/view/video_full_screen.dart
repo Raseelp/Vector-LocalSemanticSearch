@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:twentyonevision/utils/app_colors.dart';
+import 'package:twentyonevision/utils/app_radius.dart';
+import 'package:twentyonevision/utils/app_spacing.dart';
 import 'package:video_player/video_player.dart';
 
 class VideoViewScreen extends StatefulWidget {
@@ -105,11 +108,11 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
             if (_initError != null)
               Center(
                 child: Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 32),
-                  padding: const EdgeInsets.all(20),
+                  margin: const EdgeInsets.symmetric(horizontal: AppSpacing.xxl),
+                  padding: const EdgeInsets.all(AppSpacing.lg),
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.6),
-                    borderRadius: BorderRadius.circular(20),
+                    borderRadius: BorderRadius.circular(AppRadius.xl),
                   ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -119,7 +122,7 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
                         color: Colors.white70,
                         size: 36,
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: AppSpacing.md),
                       Text(
                         _initError!,
                         textAlign: TextAlign.center,
@@ -157,8 +160,8 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
                       SafeArea(
                         child: Padding(
                           padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
+                            horizontal: AppSpacing.sm,
+                            vertical: AppSpacing.xs,
                           ),
                           child: Row(
                             children: [
@@ -185,19 +188,24 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
 
                       if (ready)
                         Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+                          padding: const EdgeInsets.fromLTRB(
+                            AppSpacing.base,
+                            0,
+                            AppSpacing.base,
+                            AppSpacing.xxl,
+                          ),
                           child: Column(
                             children: [
                               VideoProgressIndicator(
                                 _controller,
                                 allowScrubbing: true,
                                 colors: const VideoProgressColors(
-                                  playedColor: Colors.white,
+                                  playedColor: AppColors.primary,
                                   bufferedColor: Colors.white38,
                                   backgroundColor: Colors.white24,
                                 ),
                                 padding: const EdgeInsets.symmetric(
-                                  vertical: 8,
+                                  vertical: AppSpacing.sm,
                                 ),
                               ),
 
@@ -217,7 +225,7 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
                                           : _controller.play();
                                     },
                                   ),
-                                  const SizedBox(width: 8),
+                                  const SizedBox(width: AppSpacing.sm),
                                   Text(
                                     _formatDuration(_controller.value.position),
                                     style: const TextStyle(
