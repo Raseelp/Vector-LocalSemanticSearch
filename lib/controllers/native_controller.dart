@@ -256,6 +256,13 @@ class NativeController extends GetxController {
   Future<void> pickAndScanFolders({required bool isScanEntirePhone}) async {
     if (isScanning) return;
 
+    // Best-effort only - without it, the scan's keep-alive notification
+    // just won't be visible. Never allowed to block or fail the scan
+    // itself, so its result is deliberately ignored. No-op pre-Android 13.
+    if (Platform.isAndroid) {
+      unawaited(Permission.notification.request());
+    }
+
     final PickingMode scanMode = isScanEntirePhone
         ? PickingMode.device
         : PickingMode.folder;

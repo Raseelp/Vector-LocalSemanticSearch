@@ -7,6 +7,13 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
 
+    <!-- Keeps a scan alive in the background: a visible notification while
+         indexing runs, so the OS (and battery-happy OEM task killers) don't
+         treat the app as idle and kill it mid-scan. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING"/>
+
 
     <application
         android:label="Vector"
@@ -38,6 +45,13 @@
         <activity
             android:name=".SafPickerActivity"
             android:exported="false" />
+
+        <!-- Keep-alive notification while a scan is running - see
+             ScanForegroundService for why this exists. -->
+        <service
+            android:name=".embedder.ScanForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing" />
 
         <!-- Flutter embedding metadata -->
         <meta-data

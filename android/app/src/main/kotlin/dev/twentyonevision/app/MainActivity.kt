@@ -16,6 +16,7 @@ import io.flutter.plugin.common.EventChannel
 import androidx.exifinterface.media.ExifInterface
 
 import dev.twentyonevision.app.embedder.EmbeddingEngine
+import dev.twentyonevision.app.embedder.ScanForegroundService
 import dev.twentyonevision.app.embedder.ScanProgress
 import dev.twentyonevision.app.embedder.ScanResult
 import dev.twentyonevision.app.embedder.models.ModelManager
@@ -86,6 +87,7 @@ class MainActivity : FlutterActivity() {
                     val contentMode = call.argument<String>("contentMode") ?: "both"
 
                     executor.execute {
+                        ScanForegroundService.start(applicationContext)
                         try {
                             embeddingEngine.embedImages(mode, uri, folderId, contentMode) { progress ->
                                 runOnUiThread {
@@ -108,6 +110,9 @@ class MainActivity : FlutterActivity() {
                                         )
                                     )
                                 }
+                                ScanForegroundService.updateProgress(
+                                    progress.processed, progress.total, progress.embedded
+                                )
                             }
                             runOnUiThread { result.success(true) }
                         } catch (e: ModelsNotReadyException) {
@@ -116,6 +121,13 @@ class MainActivity : FlutterActivity() {
                             runOnUiThread {
                                 result.error("SCAN_FAILED", e.message, null)
                             }
+                        } finally {
+                            // Covers every exit path uniformly: a normal finish
+                            // and a cancellation both end with embedImages()
+                            // returning after its own done=true emission, and a
+                            // hard failure hits this without ever emitting one -
+                            // either way the notification must not outlive the scan.
+                            ScanForegroundService.stop(applicationContext)
                         }
                     }
                 }
