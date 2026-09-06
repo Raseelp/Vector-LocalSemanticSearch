@@ -41,7 +41,7 @@ class ModelDownloadScreen extends StatelessWidget {
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          'TwentyOne Vision needs its on-device AI models '
+                          'Vector needs its on-device AI models '
                           'before it can search your photos and videos. '
                           'This happens once — everything after this runs '
                           'fully offline, and your media never leaves this '

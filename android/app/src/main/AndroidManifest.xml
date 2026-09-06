@@ -9,7 +9,7 @@
 
 
     <application
-        android:label="TwentyOne Vision"
+        android:label="Vector"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 

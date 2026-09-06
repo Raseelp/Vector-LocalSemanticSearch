@@ -1,4 +1,4 @@
-# TwentyOne Vision
+# Vector — Local Semantic Search
 
 On-device semantic search for your photos and videos. Describe what you're
 looking for — "a dog on a beach", "the whiteboard from that meeting" — and
