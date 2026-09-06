@@ -13,11 +13,18 @@ class BPE {
       return cache[token]!;
     }
 
+    // CLIP marks the end of a word by appending </w> to its last character
+    // before merging - the vocab and merge ranks were trained with this
+    // baked in ("the</w>" is a distinct, single vocab token from mid-word
+    // "the"), so skipping it silently mis-tokenizes almost every word.
     List<String> word = token.split('');
+    if (word.isNotEmpty) {
+      word[word.length - 1] = '${word.last}</w>';
+    }
     Set<List<String>> pairs = _getPairs(word);
 
     if (pairs.isEmpty) {
-      return [token];
+      return [word.isNotEmpty ? word.first : token];
     }
 
     while (true) {
