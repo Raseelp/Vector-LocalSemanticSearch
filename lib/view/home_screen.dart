@@ -112,6 +112,8 @@ class _HomeTabContent extends StatelessWidget {
             elapsedText: controller.formatDuration(
               milliseconds: controller.scanResult.elapsedMs,
             ),
+            embeddingsPerSecond: controller.recentEmbeddingsPerSecond,
+            etaText: controller.scanEtaText,
             onIndexDevice: () async {
               final NativeController nativeController = Get.find();
               final granted = await nativeController.requestMediaPermission(
@@ -1006,6 +1008,8 @@ class _HeroCard extends StatelessWidget {
     required this.isScanning,
     required this.scanResult,
     required this.elapsedText,
+    required this.embeddingsPerSecond,
+    required this.etaText,
     required this.onIndexDevice,
     required this.onChooseFolder,
     required this.onStopScanning,
@@ -1016,6 +1020,8 @@ class _HeroCard extends StatelessWidget {
   final bool isScanning;
   final IndexedFolder scanResult;
   final String elapsedText;
+  final double embeddingsPerSecond;
+  final String? etaText;
   final VoidCallback onIndexDevice;
   final VoidCallback onChooseFolder;
   final VoidCallback onStopScanning;
@@ -1057,6 +1063,8 @@ class _HeroCard extends StatelessWidget {
                         isCompact: isCompact,
                         scanResult: scanResult,
                         elapsedText: elapsedText,
+                        embeddingsPerSecond: embeddingsPerSecond,
+                        etaText: etaText,
                         onStopScanning: onStopScanning,
                       );
                     }
@@ -1273,12 +1281,16 @@ class _HeroScanningActions extends StatelessWidget {
     required this.isCompact,
     required this.scanResult,
     required this.elapsedText,
+    required this.embeddingsPerSecond,
+    required this.etaText,
     required this.onStopScanning,
   });
 
   final bool isCompact;
   final IndexedFolder scanResult;
   final String elapsedText;
+  final double embeddingsPerSecond;
+  final String? etaText;
   final VoidCallback onStopScanning;
 
   @override
@@ -1301,6 +1313,8 @@ class _HeroScanningActions extends StatelessWidget {
       processedLabel: processedLabel,
       embedded: scanResult.embedded,
       skipped: scanResult.skipped,
+      embeddingsPerSecond: embeddingsPerSecond,
+      etaText: etaText,
     );
     final controlPanel = _HeroScanControlPanel(
       elapsedText: elapsedText.isEmpty ? '0 Seconds' : elapsedText,
@@ -1332,14 +1346,27 @@ class _HeroProgressPanel extends StatelessWidget {
     required this.processedLabel,
     required this.embedded,
     required this.skipped,
+    required this.embeddingsPerSecond,
+    required this.etaText,
   });
 
   final double progress;
   final int progressPercent;
   final String path;
+  final double embeddingsPerSecond;
+  final String? etaText;
   final String processedLabel;
   final int embedded;
   final int skipped;
+
+  String get _speedLabel {
+    if (embeddingsPerSecond <= 0) return 'measuring speed...';
+    if (embeddingsPerSecond >= 1) {
+      return '${embeddingsPerSecond.toStringAsFixed(1)}/sec';
+    }
+    final msPerItem = (1000 / embeddingsPerSecond).round();
+    return '${msPerItem}ms/item';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1431,6 +1458,15 @@ class _HeroProgressPanel extends StatelessWidget {
                 icon: Icons.skip_next_outlined,
                 label: '$skipped skipped',
               ),
+              _HeroProgressPill(
+                icon: Icons.speed_rounded,
+                label: _speedLabel,
+              ),
+              if (etaText != null)
+                _HeroProgressPill(
+                  icon: Icons.hourglass_bottom_rounded,
+                  label: '$etaText left',
+                ),
             ],
           ),
           const SizedBox(height: 8),

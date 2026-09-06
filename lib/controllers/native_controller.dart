@@ -37,6 +37,13 @@ class NativeController extends GetxController {
   final Map<String, Uint8List> imageCache = {};
   late StreamSubscription<Map<String, dynamic>> _progressSub;
   IndexedFolder scanResult = IndexedFolder.empty();
+
+  // Recent (not whole-scan-average) throughput, recomputed from consecutive
+  // progress events - reacts within a couple of seconds to something that
+  // actually changes speed, instead of being dragged down by the whole
+  // scan's history like a cumulative average would be.
+  double recentEmbeddingsPerSecond = 0;
+  IndexedFolder? _previousProgress;
   final db = IndexedFolderDbHelper.instance;
   ImageMetadata selectedMetadata = ImageMetadata.empty();
 
@@ -192,11 +199,26 @@ class NativeController extends GetxController {
 
     isScanning = true;
     scanResult = IndexedFolder.empty();
+    recentEmbeddingsPerSecond = 0;
+    _previousProgress = null;
     error = '';
     update();
 
     _progressSub = NativeServices().scanProgressStream().listen((data) {
-      scanResult = IndexedFolder.fromMap(data);
+      final newResult = IndexedFolder.fromMap(data);
+
+      final prev = _previousProgress;
+      if (prev != null) {
+        final embeddedDelta = newResult.embedded - prev.embedded;
+        final msDelta = newResult.elapsedMs - prev.elapsedMs;
+        // Ignore a duplicate/out-of-order tick rather than divide by ~0 and
+        // show a meaningless spike.
+        if (msDelta > 200) {
+          recentEmbeddingsPerSecond = embeddedDelta / (msDelta / 1000.0);
+        }
+      }
+      _previousProgress = newResult;
+      scanResult = newResult;
 
       if (scanResult.done) {
         isScanning = false;
@@ -321,6 +343,21 @@ class NativeController extends GetxController {
   Future<void> getAllFoldersList() async {
     allIndexedFoldersList = await db.getAllFolders();
     update();
+  }
+
+  // Based on the whole-scan average rather than the recent/instantaneous
+  // one - an ETA that jumps around every time the recent rate wobbles would
+  // be more distracting than useful. Null until there's enough data to
+  // bother estimating from.
+  String? get scanEtaText {
+    if (!isScanning) return null;
+    final total = scanResult.total;
+    final processed = scanResult.processed;
+    if (total <= 0 || processed <= 0 || processed >= total) return null;
+
+    final msPerItem = scanResult.elapsedMs / processed;
+    final remainingMs = (msPerItem * (total - processed)).round();
+    return formatDuration(milliseconds: remainingMs);
   }
 
   String formatDuration({required num milliseconds}) {
