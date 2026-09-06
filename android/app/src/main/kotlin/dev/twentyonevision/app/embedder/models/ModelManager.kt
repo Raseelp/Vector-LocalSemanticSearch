@@ -2,7 +2,10 @@ package dev.twentyonevision.app.embedder.models
 
 import android.content.Context
 import android.os.StatFs
+import android.util.Log
+import dev.twentyonevision.app.BuildConfig
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
@@ -35,6 +38,8 @@ class ModelManager(private val context: Context) {
     private fun verifiedKey(model: RemoteModel) = "verified_${model.id}_${model.sha256}"
 
     fun isModelVerified(model: RemoteModel): Boolean {
+        seedFromDebugAssetsIfPresent(model)
+
         val file = localFile(model)
         if (!file.exists() || file.length() != model.sizeBytes) return false
 
@@ -225,6 +230,30 @@ class ModelManager(private val context: Context) {
                 done = true
             )
         )
+    }
+
+    // Debug convenience: if a model file is sitting in
+    // android/app/src/debug/assets/ (a debug-only source set - Gradle never
+    // includes it in a release build, so this can't bloat a real release
+    // APK even by accident), copy it into place so the app skips the
+    // download screen entirely. No-ops instantly whenever nothing's there,
+    // which is the normal case for everyone who isn't using this.
+    private fun seedFromDebugAssetsIfPresent(model: RemoteModel) {
+        if (!BuildConfig.DEBUG) return
+
+        val target = localFile(model)
+        if (target.exists() && target.length() == model.sizeBytes) return
+
+        try {
+            context.assets.open(model.fileName).use { input ->
+                FileOutputStream(target).use { output ->
+                    input.copyTo(output, BUFFER_SIZE)
+                }
+            }
+            Log.d("ModelManager", "Seeded ${model.fileName} from debug assets")
+        } catch (e: IOException) {
+            // Not bundled for this build - the normal case, nothing to do.
+        }
     }
 
     private fun sha256Of(file: File): String {
