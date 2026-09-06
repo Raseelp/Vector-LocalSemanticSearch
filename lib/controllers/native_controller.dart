@@ -17,6 +17,7 @@ class NativeController extends GetxController {
     await checkModelsReady();
     await getAllFoldersList();
     await getTotalEmbeddings();
+    await checkBackgroundScanPermission();
     super.onInit();
   }
 
@@ -27,6 +28,13 @@ class NativeController extends GetxController {
   double sliderValue = 10;
   List<Map<String, dynamic>> searchResults = [];
   bool isScanning = false;
+  // Whether the OS will show our scan-progress notification (see
+  // ScanForegroundService natively). Never requested automatically - we
+  // already ask for storage/media access right before a scan, and asking
+  // for both at once overwhelms people. Instead the scanning UI offers its
+  // own "Enable" control; this just reflects the OS's actual current
+  // answer, re-checked on app open and whenever a scan starts.
+  bool backgroundNotificationsGranted = false;
   bool isSearching = false;
   bool isFetchingMetadata = false;
   bool showMetadata = false;
@@ -256,12 +264,12 @@ class NativeController extends GetxController {
   Future<void> pickAndScanFolders({required bool isScanEntirePhone}) async {
     if (isScanning) return;
 
-    // Best-effort only - without it, the scan's keep-alive notification
-    // just won't be visible. Never allowed to block or fail the scan
-    // itself, so its result is deliberately ignored. No-op pre-Android 13.
-    if (Platform.isAndroid) {
-      unawaited(Permission.notification.request());
-    }
+    // Never requested here - we're about to ask for storage/media access
+    // below, and asking for notifications too would be one permission
+    // prompt too many. Just refresh what the OS currently says, in case it
+    // changed since the app opened (e.g. granted from system settings);
+    // the scanning UI offers its own control to actually request it.
+    unawaited(checkBackgroundScanPermission());
 
     final PickingMode scanMode = isScanEntirePhone
         ? PickingMode.device
@@ -523,6 +531,35 @@ class NativeController extends GetxController {
     final Map<Permission, PermissionStatus> statuses = await required.request();
 
     return statuses.values.every((s) => s.isGranted);
+  }
+
+  // Read-only - reflects the OS's current answer without prompting.
+  // No-op/always-granted pre-Android 13, where this permission doesn't exist.
+  Future<void> checkBackgroundScanPermission() async {
+    if (!Platform.isAndroid) {
+      backgroundNotificationsGranted = true;
+      update();
+      return;
+    }
+    backgroundNotificationsGranted = await Permission.notification.isGranted;
+    update();
+  }
+
+  // The only place that actually prompts for it - wired to the "Enable"
+  // control in the scanning UI, never called automatically.
+  Future<void> requestBackgroundScanPermission() async {
+    if (!Platform.isAndroid) return;
+
+    final status = await Permission.notification.status;
+    if (status.isPermanentlyDenied) {
+      // A second in-app prompt would be a no-op - the OS already stopped
+      // asking. Settings is the only way left to turn it on.
+      await openAppSettings();
+    } else {
+      await Permission.notification.request();
+    }
+
+    await checkBackgroundScanPermission();
   }
 
   getPickingModeString({required PickingMode pickingMode}) {

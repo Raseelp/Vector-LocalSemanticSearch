@@ -116,6 +116,10 @@ class _HomeTabContent extends StatelessWidget {
             etaText: controller.scanEtaText,
             recentThumbnails: controller.recentThumbnails,
             recentThumbBytes: controller.recentThumbBytes,
+            backgroundNotificationsGranted: controller.backgroundNotificationsGranted,
+            onEnableBackgroundScanning: () {
+              controller.requestBackgroundScanPermission();
+            },
             onIndexDevice: () async {
               final NativeController nativeController = Get.find();
               final granted = await nativeController.requestMediaPermission(
@@ -1061,6 +1065,8 @@ class _HeroCard extends StatelessWidget {
     required this.etaText,
     required this.recentThumbnails,
     required this.recentThumbBytes,
+    required this.backgroundNotificationsGranted,
+    required this.onEnableBackgroundScanning,
     required this.onIndexDevice,
     required this.onChooseFolder,
     required this.onStopScanning,
@@ -1075,6 +1081,8 @@ class _HeroCard extends StatelessWidget {
   final String? etaText;
   final List<RecentEmbeddedItem> recentThumbnails;
   final Map<String, Uint8List> recentThumbBytes;
+  final bool backgroundNotificationsGranted;
+  final VoidCallback onEnableBackgroundScanning;
   final VoidCallback onIndexDevice;
   final VoidCallback onChooseFolder;
   final VoidCallback onStopScanning;
@@ -1112,15 +1120,24 @@ class _HeroCard extends StatelessWidget {
                   builder: (context, constraints) {
                     final isCompact = constraints.maxWidth < 420;
                     if (isScanning) {
-                      return _HeroScanningActions(
-                        isCompact: isCompact,
-                        scanResult: scanResult,
-                        elapsedText: elapsedText,
-                        embeddingsPerSecond: embeddingsPerSecond,
-                        etaText: etaText,
-                        recentThumbnails: recentThumbnails,
-                        recentThumbBytes: recentThumbBytes,
-                        onStopScanning: onStopScanning,
+                      return Column(
+                        children: [
+                          _HeroScanningActions(
+                            isCompact: isCompact,
+                            scanResult: scanResult,
+                            elapsedText: elapsedText,
+                            embeddingsPerSecond: embeddingsPerSecond,
+                            etaText: etaText,
+                            recentThumbnails: recentThumbnails,
+                            recentThumbBytes: recentThumbBytes,
+                            onStopScanning: onStopScanning,
+                          ),
+                          const SizedBox(height: 10),
+                          _BackgroundScanBanner(
+                            granted: backgroundNotificationsGranted,
+                            onEnable: onEnableBackgroundScanning,
+                          ),
+                        ],
                       );
                     }
 
@@ -1236,6 +1253,110 @@ class _HeroTrustStrip extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// Shown only while scanning - offers the background-notification permission
+// on its own terms instead of bundling it into the storage/media prompt
+// that already fires right before a scan starts. Deliberately its own
+// opt-in control, not an automatic request.
+class _BackgroundScanBanner extends StatelessWidget {
+  const _BackgroundScanBanner({required this.granted, required this.onEnable});
+
+  final bool granted;
+  final VoidCallback onEnable;
+
+  @override
+  Widget build(BuildContext context) {
+    // Sits directly on the hero card's teal gradient (same as
+    // _HeroTrustStrip above it in the tree, not on the yellow/pink scan
+    // panels), so this uses the same white-on-gradient treatment - not the
+    // dark textPrimary-based colors those opaque panels use for themselves.
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              granted
+                  ? Icons.notifications_active_rounded
+                  : Icons.notifications_none_rounded,
+              color: Colors.white,
+              size: 17,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              granted
+                  ? 'Background scanning enabled - this keeps going if you switch apps.'
+                  : 'Keep this scan going in the background, even if you switch apps.',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.88),
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                height: 1.3,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          if (granted)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.secondoryButtonColor,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: const Text(
+                'On',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            )
+          else
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(999),
+                onTap: onEnable,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Text(
+                    'Enable',
+                    style: TextStyle(
+                      color: AppColors.primarybuttonColor,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
