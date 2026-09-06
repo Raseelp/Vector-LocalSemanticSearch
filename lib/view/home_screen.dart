@@ -120,6 +120,8 @@ class _HomeTabContent extends StatelessWidget {
             onEnableBackgroundScanning: () {
               controller.requestBackgroundScanPermission();
             },
+            contentMode: controller.selectedContentMode,
+            onCycleContentMode: controller.cycleContentMode,
             onIndexDevice: () async {
               final NativeController nativeController = Get.find();
               final granted = await nativeController.requestMediaPermission(
@@ -236,38 +238,10 @@ class _SearchComposer extends StatelessWidget {
         children: [
           const _SectionHeading(
             title: 'Search your media',
-            subtitle:
-                'Describe a moment, use an image reference, and choose the media scope from one focused search area.',
+            subtitle: 'Describe a moment, or search using an image instead.',
           ),
           const SizedBox(height: 16),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final useSideBySide = constraints.maxWidth >= 720;
-
-              if (useSideBySide) {
-                return Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: _SearchInputBar(controller: controller)),
-                    const SizedBox(width: 12),
-                    SizedBox(
-                      width: 270,
-                      child: _CompactScopeSelector(controller: controller),
-                    ),
-                  ],
-                );
-              }
-
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _SearchInputBar(controller: controller),
-                  const SizedBox(height: 12),
-                  _CompactScopeSelector(controller: controller),
-                ],
-              );
-            },
-          ),
+          _SearchInputBar(controller: controller),
         ],
       ),
     );
@@ -440,134 +414,6 @@ class _TextSearchAction extends StatelessWidget {
                     ),
                   ),
                 ],
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _CompactScopeSelector extends StatelessWidget {
-  const _CompactScopeSelector({required this.controller});
-
-  final NativeController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(5),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceAccent.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: AppColors.borderColor.withValues(alpha: 0.08),
-        ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: _ScopeSegment(
-              label: 'Images',
-              icon: Icons.image_outlined,
-              isSelected: controller.selectedContentMode == ContentMode.images,
-              onTap: () {
-                controller.toggleSelectedContentMode(
-                  contentMode: ContentMode.images,
-                );
-              },
-            ),
-          ),
-          const SizedBox(width: 5),
-          Expanded(
-            child: _ScopeSegment(
-              label: 'Both',
-              icon: Icons.auto_awesome_mosaic_outlined,
-              isSelected: controller.selectedContentMode == ContentMode.both,
-              onTap: () {
-                controller.toggleSelectedContentMode(
-                  contentMode: ContentMode.both,
-                );
-              },
-            ),
-          ),
-          const SizedBox(width: 5),
-          Expanded(
-            child: _ScopeSegment(
-              label: 'Videos',
-              icon: Icons.videocam_outlined,
-              isSelected: controller.selectedContentMode == ContentMode.videos,
-              onTap: () {
-                controller.toggleSelectedContentMode(
-                  contentMode: ContentMode.videos,
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ScopeSegment extends StatelessWidget {
-  const _ScopeSegment({
-    required this.label,
-    required this.icon,
-    required this.isSelected,
-    required this.onTap,
-  });
-
-  final String label;
-  final IconData icon;
-  final bool isSelected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final foregroundColor = isSelected ? Colors.white : AppColors.textPrimary;
-
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-      decoration: BoxDecoration(
-        gradient: isSelected ? AppColors.heroGradient : null,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: isSelected
-            ? [
-                BoxShadow(
-                  color: AppColors.primarybuttonColor.withValues(alpha: 0.2),
-                  blurRadius: 14,
-                  offset: const Offset(0, 8),
-                ),
-              ]
-            : null,
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(16),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 18, color: foregroundColor),
-                const SizedBox(height: 5),
-                Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: isSelected
-                        ? foregroundColor
-                        : AppColors.textSecondary,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
               ],
             ),
           ),
@@ -1086,6 +932,8 @@ class _HeroCard extends StatelessWidget {
     required this.recentThumbBytes,
     required this.backgroundNotificationsGranted,
     required this.onEnableBackgroundScanning,
+    required this.contentMode,
+    required this.onCycleContentMode,
     required this.onIndexDevice,
     required this.onChooseFolder,
     required this.onStopScanning,
@@ -1102,6 +950,8 @@ class _HeroCard extends StatelessWidget {
   final Map<String, Uint8List> recentThumbBytes;
   final bool backgroundNotificationsGranted;
   final VoidCallback onEnableBackgroundScanning;
+  final ContentMode contentMode;
+  final VoidCallback onCycleContentMode;
   final VoidCallback onIndexDevice;
   final VoidCallback onChooseFolder;
   final VoidCallback onStopScanning;
@@ -1133,6 +983,12 @@ class _HeroCard extends StatelessWidget {
                 _HeroStatsRow(
                   totalEmbeddings: totalEmbeddings,
                   indexedFolders: indexedFolders,
+                ),
+                const SizedBox(height: 10),
+                _ScanScopeChip(
+                  mode: contentMode,
+                  locked: isScanning,
+                  onTap: onCycleContentMode,
                 ),
                 const SizedBox(height: 14),
                 LayoutBuilder(
@@ -1466,6 +1322,132 @@ class _HeroMetric extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// Compact, tappable "what the next scan will include" control - cycles
+// Images -> Both -> Videos on tap. Lives right under the Embeddings/Folders
+// stats since that's its only real effect: it used to sit in the Search
+// tab worded as a search scope, which it never actually was - search
+// always looks across everything already indexed. Locked (not tappable)
+// while a scan is running, since changing it can't affect that scan.
+class _ScanScopeChip extends StatelessWidget {
+  const _ScanScopeChip({
+    required this.mode,
+    required this.locked,
+    required this.onTap,
+  });
+
+  final ContentMode mode;
+  final bool locked;
+  final VoidCallback onTap;
+
+  IconData get _icon {
+    switch (mode) {
+      case ContentMode.images:
+        return Icons.image_outlined;
+      case ContentMode.videos:
+        return Icons.videocam_outlined;
+      case ContentMode.both:
+        return Icons.auto_awesome_mosaic_outlined;
+    }
+  }
+
+  String get _label {
+    switch (mode) {
+      case ContentMode.images:
+        return 'Images only';
+      case ContentMode.videos:
+        return 'Videos only';
+      case ContentMode.both:
+        return 'Images & videos';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: locked ? null : onTap,
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 200),
+          opacity: locked ? 0.55 : 1,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 220),
+                    transitionBuilder: (child, anim) => ScaleTransition(
+                      scale: anim,
+                      child: FadeTransition(opacity: anim, child: child),
+                    ),
+                    child: Icon(
+                      _icon,
+                      key: ValueKey(mode),
+                      color: Colors.white,
+                      size: 15,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Next scan includes',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.66),
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 220),
+                        transitionBuilder: (child, anim) =>
+                            FadeTransition(opacity: anim, child: child),
+                        child: Text(
+                          _label,
+                          key: ValueKey(mode),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (!locked)
+                  Icon(
+                    Icons.sync_alt_rounded,
+                    color: Colors.white.withValues(alpha: 0.7),
+                    size: 16,
+                  ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

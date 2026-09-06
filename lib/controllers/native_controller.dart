@@ -587,6 +587,21 @@ class NativeController extends GetxController {
     selectedContentMode = contentMode;
     update();
   }
+
+  // Only ever affects the *next* scan - it has no bearing on search, which
+  // always looks across everything already indexed regardless of this.
+  static const _contentModeCycle = [
+    ContentMode.images,
+    ContentMode.both,
+    ContentMode.videos,
+  ];
+
+  void cycleContentMode() {
+    final currentIndex = _contentModeCycle.indexOf(selectedContentMode);
+    final next =
+        _contentModeCycle[(currentIndex + 1) % _contentModeCycle.length];
+    toggleSelectedContentMode(contentMode: next);
+  }
 }
 
 enum PickingMode { device, folder }
