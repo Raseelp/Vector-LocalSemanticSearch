@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import org.pytorch.IValue
 import org.pytorch.Module
+import org.pytorch.PyTorchAndroid
 import org.pytorch.Tensor
 import com.facebook.soloader.SoLoader
 import dev.twentyonevision.app.embedder.models.ModelCatalog
@@ -15,6 +16,9 @@ import dev.twentyonevision.app.embedder.storage.HashUtils
 import androidx.documentfile.provider.DocumentFile
 import android.provider.DocumentsContract
 import android.util.Log
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 
 
 class EmbeddingEngine(
@@ -36,10 +40,28 @@ class EmbeddingEngine(
     companion object {
         private const val TAG = "EmbeddingEngine"
         private const val PROGRESS_INTERVAL_MS = 500L
+
+        // How many images go into one forward() call, and how many decode
+        // threads prepare tensors ahead of the inference thread. Tunable -
+        // not measured against real devices yet.
+        private const val INFERENCE_BATCH_SIZE = 4
+        private const val PREP_THREAD_COUNT = 2
+
+        // Every image/frame tensor is always exactly 3x224x224 - fixed by
+        // ImagePreprocessor - so batching can rely on this instead of
+        // inspecting each Tensor's shape at runtime.
+        private const val VISION_INPUT_SIZE = 224
     }
 
     init {
         SoLoader.init(context, false)
+
+        // Leave one core free for the UI/system rather than saturating all
+        // of them during a scan.
+        val threads = (Runtime.getRuntime().availableProcessors() - 1).coerceAtLeast(1)
+        PyTorchAndroid.setNumThreads(threads)
+        Log.d(TAG, "PyTorch thread count set to $threads")
+
         store = EmbeddingStore(context)
     }
 
@@ -198,52 +220,104 @@ class EmbeddingEngine(
         val batchSize = 10
         val batch = mutableListOf<EmbeddingRecord>()
 
-        for (img in imageFiles) {
+        // Images go through in small chunks: while one chunk's tensors are
+        // being decoded on background threads, the previous (already
+        // decoded) chunk is being batch-inferred on this thread. That
+        // overlaps decode time with inference time instead of paying both
+        // back to back per image, and running one forward() call per chunk
+        // instead of per image cuts per-call overhead.
+        val prepPool = Executors.newFixedThreadPool(PREP_THREAD_COUNT)
+        try {
+            data class PendingChunk(
+                val toEmbed: List<Pair<ImageSource, Long>>,
+                val futures: List<Future<Tensor?>>
+            )
 
-            if (isCancelled) {
-                if (batch.isNotEmpty()) { store.appendBatch(batch); batch.clear() }
-                break
+            fun submitChunk(chunk: List<ImageSource>): PendingChunk {
+                val toEmbed = mutableListOf<Pair<ImageSource, Long>>()
+                for (img in chunk) {
+                    try {
+                        val hash = HashUtils.identityHash(img.size, img.lastModified, img.name)
+                        if (existingHashes.contains(hash)) {
+                            skipped++
+                        } else {
+                            // Claimed now, not after a successful embed - two
+                            // chunks decoding at once must never both try to
+                            // embed the same hash.
+                            existingHashes.add(hash)
+                            toEmbed.add(img to hash)
+                        }
+                    } catch (e: Exception) {
+                        skipped++
+                    }
+                }
+                val futures = toEmbed.map { (img, _) ->
+                    prepPool.submit(Callable {
+                        try { ImagePreprocessor.loadAsTensor(context, img.uri) } catch (e: Exception) { null }
+                    })
+                }
+                return PendingChunk(toEmbed, futures)
             }
 
-            try {
-                val hash = HashUtils.identityHash(img.size, img.lastModified, img.name)
+            val chunks = imageFiles.chunked(INFERENCE_BATCH_SIZE)
+            var prefetched: PendingChunk? = null
 
-                if (existingHashes.contains(hash)) {
-                    skipped++
-                } else {
-                    val tensor = ImagePreprocessor.loadAsTensor(context, img.uri)
+            for (chunkIndex in chunks.indices) {
+                if (isCancelled) break
+
+                val chunk = chunks[chunkIndex]
+                val current = prefetched ?: submitChunk(chunk)
+                prefetched = if (chunkIndex + 1 < chunks.size && !isCancelled) {
+                    submitChunk(chunks[chunkIndex + 1])
+                } else null
+
+                val tensors = mutableListOf<Tensor>()
+                val meta = mutableListOf<Pair<ImageSource, Long>>()
+                for ((idx, pair) in current.toEmbed.withIndex()) {
+                    val tensor = try { current.futures[idx].get() } catch (e: Exception) { null }
                     if (tensor == null) {
                         skipped++
                     } else {
-                        val embedding = vision
-                            .forward(IValue.from(tensor))
-                            .toTensor()
-                            .dataAsFloatArray
+                        tensors.add(tensor)
+                        meta.add(pair)
+                    }
+                }
 
-                        batch.add(
-                            EmbeddingRecord(
-                                imagePath = img.uri.toString(),
-                                hash = hash,
-                                embedding = embedding,
-                                folderId = folderId
+                if (tensors.isNotEmpty()) {
+                    val embeddings = runBatchedInference(vision, tensors)
+                    for ((idx, pair) in meta.withIndex()) {
+                        val embedding = embeddings[idx]
+                        if (embedding == null) {
+                            skipped++
+                        } else {
+                            val (img, hash) = pair
+                            batch.add(
+                                EmbeddingRecord(
+                                    imagePath = img.uri.toString(),
+                                    hash = hash,
+                                    embedding = embedding,
+                                    folderId = folderId
+                                )
                             )
-                        )
-
-                        existingHashes.add(hash)
-                        embedded++
-
-                        if (batch.size >= batchSize) {
-                            store.appendBatch(batch)
-                            batch.clear()
+                            embedded++
+                            if (batch.size >= batchSize) {
+                                store.appendBatch(batch)
+                                batch.clear()
+                            }
                         }
                     }
                 }
-            } catch (e: Exception) {
-                skipped++
+
+                processed += chunk.size
+                emitProgressIfNeeded(total, processed, embedded, skipped, label, onProgress)
             }
 
-            processed++
-            emitProgressIfNeeded(total, processed, embedded, skipped, label, onProgress)
+            if (isCancelled && batch.isNotEmpty()) {
+                store.appendBatch(batch)
+                batch.clear()
+            }
+        } finally {
+            prepPool.shutdownNow()
         }
 
         if (!isCancelled) {
@@ -324,27 +398,13 @@ class EmbeddingEngine(
 
         if (frames.isEmpty()) return emptyList()
 
-        val records = mutableListOf<EmbeddingRecord>()
+        val tensors = mutableListOf<Tensor>()
+        val timestamps = mutableListOf<Long>()
 
         for ((timestampMs, bitmap) in frames) {
             try {
-                val tensor = ImagePreprocessor.bitmapToTensor(bitmap)
-
-                val embedding = vision
-                    .forward(IValue.from(tensor))
-                    .toTensor()
-                    .dataAsFloatArray
-
-                records.add(
-                    EmbeddingRecord(
-                        imagePath   = videoUriString,
-                        hash        = hash,
-                        embedding   = embedding,
-                        folderId    = folderId,
-                        videoUri    = videoUriString,
-                        timestampMs = timestampMs
-                    )
-                )
+                tensors.add(ImagePreprocessor.bitmapToTensor(bitmap))
+                timestamps.add(timestampMs)
             } catch (e: Exception) {
                 // one bad frame doesn't kill the whole video
             } finally {
@@ -352,7 +412,81 @@ class EmbeddingEngine(
             }
         }
 
+        if (tensors.isEmpty()) return emptyList()
+
+        // All of a video's frames are already extracted by this point, so
+        // one forward() call for all of them is a straightforward win - no
+        // pipelining needed here, just batching.
+        val embeddings = runBatchedInference(vision, tensors)
+        val records = mutableListOf<EmbeddingRecord>()
+
+        for (i in tensors.indices) {
+            val embedding = embeddings[i] ?: continue
+            records.add(
+                EmbeddingRecord(
+                    imagePath   = videoUriString,
+                    hash        = hash,
+                    embedding   = embedding,
+                    folderId    = folderId,
+                    videoUri    = videoUriString,
+                    timestampMs = timestamps[i]
+                )
+            )
+        }
+
         return records
+    }
+
+    /**
+     * One forward() call for the whole batch instead of one per tensor -
+     * cuts per-call overhead. Falls back to one-by-one, with per-tensor
+     * isolation, if the batched call fails for any reason (a bad shape
+     * assumption, an odd tensor, anything) - a wrong guess here can't crash
+     * a scan, at worst it just loses the speedup.
+     *
+     * A null in the returned list means that specific tensor failed to
+     * embed (caller should treat it as a skip, same as before batching).
+     */
+    private fun runBatchedInference(vision: Module, tensors: List<Tensor>): List<FloatArray?> {
+        if (tensors.isEmpty()) return emptyList()
+
+        if (tensors.size == 1) {
+            return listOf(
+                try {
+                    vision.forward(IValue.from(tensors[0])).toTensor().dataAsFloatArray
+                } catch (e: Exception) {
+                    null
+                }
+            )
+        }
+
+        val batched = try {
+            val perItemFloats = 3 * VISION_INPUT_SIZE * VISION_INPUT_SIZE
+            val batchedData = FloatArray(tensors.size * perItemFloats)
+            for ((i, t) in tensors.withIndex()) {
+                System.arraycopy(t.dataAsFloatArray, 0, batchedData, i * perItemFloats, perItemFloats)
+            }
+            val batchedTensor = Tensor.fromBlob(
+                batchedData,
+                longArrayOf(tensors.size.toLong(), 3L, VISION_INPUT_SIZE.toLong(), VISION_INPUT_SIZE.toLong())
+            )
+            val output = vision.forward(IValue.from(batchedTensor)).toTensor().dataAsFloatArray
+            val embeddingDim = output.size / tensors.size
+            (0 until tensors.size).map { i -> output.copyOfRange(i * embeddingDim, (i + 1) * embeddingDim) }
+        } catch (e: Exception) {
+            Log.w(TAG, "runBatchedInference: batched forward failed (${e.message}), falling back to one-by-one", e)
+            null
+        }
+
+        if (batched != null) return batched
+
+        return tensors.map { t ->
+            try {
+                vision.forward(IValue.from(t)).toTensor().dataAsFloatArray
+            } catch (e: Exception) {
+                null
+            }
+        }
     }
 
 
