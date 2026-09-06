@@ -64,16 +64,39 @@ class SettingsScreen extends StatelessWidget {
                       const SizedBox(height: AppSpacing.xl),
                       const _GroupLabel('Library'),
                       _GroupCard(
-                        children: controller.allIndexedFoldersList.isEmpty
-                            ? [
-                                const _SettingsRow(
-                                  icon: Icons.folder_off_outlined,
-                                  title: 'No folders indexed yet',
-                                ),
-                              ]
-                            : controller.allIndexedFoldersList
-                                  .map((f) => _FolderRow(folder: f, controller: controller))
-                                  .toList(),
+                        children: [
+                          if (controller.allIndexedFoldersList.isEmpty)
+                            const _SettingsRow(
+                              icon: Icons.folder_off_outlined,
+                              title: 'No folders indexed yet',
+                            )
+                          else
+                            ...controller.allIndexedFoldersList.map(
+                              (f) => _FolderRow(folder: f, controller: controller),
+                            ),
+                          if (controller.isScanning)
+                            _SettingsRow(
+                              icon: Icons.sync_rounded,
+                              accentIcon: true,
+                              title: 'Indexing in progress',
+                              subtitle: 'Go back to see live progress',
+                              onTap: () => Navigator.of(context).pop(),
+                            )
+                          else ...[
+                            _SettingsRow(
+                              icon: Icons.travel_explore_rounded,
+                              accentIcon: true,
+                              title: 'Index my phone',
+                              onTap: () => _startDeviceScan(context, controller),
+                            ),
+                            _SettingsRow(
+                              icon: Icons.create_new_folder_outlined,
+                              accentIcon: true,
+                              title: 'Choose a folder',
+                              onTap: () => _startFolderScan(context, controller),
+                            ),
+                          ],
+                        ],
                       ),
                       const SizedBox(height: AppSpacing.xl),
                       const _GroupLabel('Search'),
@@ -123,6 +146,27 @@ class SettingsScreen extends StatelessWidget {
       },
     );
   }
+}
+
+// Both pop back to Home right after starting - the scan's own progress
+// only shows there, not in Settings, so there'd be nothing to look at by
+// staying on this screen.
+Future<void> _startDeviceScan(BuildContext context, NativeController controller) async {
+  final granted = await controller.requestMediaPermission(
+    contentMode: controller.selectedContentMode,
+  );
+  if (!granted) return;
+  controller.pickAndScanFolders(isScanEntirePhone: true);
+  if (context.mounted) Navigator.of(context).pop();
+}
+
+void _startFolderScan(BuildContext context, NativeController controller) {
+  // Not awaited - pickAndScanFolders doesn't resolve until the whole scan
+  // finishes, and this only needs to kick it off. The system folder picker
+  // it opens is its own overlay, so it still shows correctly on top of
+  // whichever screen ends up visible underneath.
+  controller.pickAndScanFolders(isScanEntirePhone: false);
+  Navigator.of(context).pop();
 }
 
 class _SettingsTopBar extends StatelessWidget {
@@ -195,6 +239,7 @@ class _SettingsRow extends StatelessWidget {
     this.subtitle,
     this.trailing,
     this.accentIcon = false,
+    this.onTap,
   });
 
   final IconData icon;
@@ -202,10 +247,11 @@ class _SettingsRow extends StatelessWidget {
   final String? subtitle;
   final Widget? trailing;
   final bool accentIcon;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    final row = Padding(
       padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.md),
       child: Row(
         children: [
@@ -219,7 +265,9 @@ class _SettingsRow extends StatelessWidget {
                   title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleSmall,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleSmall?.copyWith(color: accentIcon ? AppColors.primary : null),
                 ),
                 if (subtitle != null) ...[
                   const SizedBox(height: 1),
@@ -240,6 +288,9 @@ class _SettingsRow extends StatelessWidget {
         ],
       ),
     );
+
+    if (onTap == null) return row;
+    return InkWell(onTap: onTap, child: row);
   }
 }
 
@@ -394,9 +445,9 @@ class _PermissionsCardState extends State<_PermissionsCard> with WidgetsBindingO
 
   @override
   Widget build(BuildContext context) {
-    if (_photosGranted == true && _videosGranted == true) {
-      return const SizedBox.shrink();
-    }
+    // Always shows the two status rows, granted or not - hiding the whole
+    // card once granted left the "Permissions" label sitting above nothing,
+    // which reads as broken rather than as good news.
     final needsGrant = _photosGranted == false || _videosGranted == false;
 
     return _GroupCard(

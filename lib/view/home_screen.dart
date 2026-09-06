@@ -90,6 +90,11 @@ class _HomeTopBar extends StatelessWidget {
   }
 }
 
+// The search bar has two input modes - typed text, or an attached photo for
+// a reverse-image search - and one explicit way to submit either. Picking a
+// photo only attaches it (shown as a chip, same idea as an attachment
+// preview above a chat message) - nothing runs until Search is pressed,
+// exactly like typing text doesn't search until then either.
 class _SearchPill extends StatelessWidget {
   const _SearchPill({required this.controller});
 
@@ -97,42 +102,169 @@ class _SearchPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.xxs),
-      decoration: BoxDecoration(
-        color: AppColors.parchment,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
+    final hasImage = controller.pickedSearchImageUri != null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.xxs),
+          decoration: BoxDecoration(
+            color: AppColors.parchment,
+            borderRadius: BorderRadius.circular(AppRadius.pill),
+          ),
+          child: Row(
+            children: [
+              if (hasImage) ...[
+                Expanded(child: _AttachedImageChip(controller: controller)),
+              ] else ...[
+                const Icon(Icons.search_rounded, size: 19, color: AppColors.ink48),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: TextField(
+                    controller: controller.searchTextController,
+                    onTapOutside: (_) => FocusScope.of(context).unfocus(),
+                    onSubmitted: (_) => controller.runSearch(),
+                    textInputAction: TextInputAction.search,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                    decoration: const InputDecoration(
+                      hintText: 'Search your photos and videos',
+                      hintStyle: TextStyle(color: AppColors.ink48),
+                      border: InputBorder.none,
+                      isCollapsed: true,
+                      contentPadding: EdgeInsets.symmetric(vertical: AppSpacing.md),
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(width: AppSpacing.sm),
+              _SearchSubmitButton(controller: controller),
+            ],
+          ),
+        ),
+        if (!hasImage) ...[
+          const SizedBox(height: AppSpacing.xs),
+          _ImageSearchHint(onTap: controller.pickSearchImage),
+        ],
+      ],
+    );
+  }
+}
+
+class _AttachedImageChip extends StatelessWidget {
+  const _AttachedImageChip({required this.controller});
+
+  final NativeController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = controller.pickedSearchImageBytes;
+
+    return Row(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          child: SizedBox(
+            width: 32,
+            height: 32,
+            child: bytes == null
+                ? const ColoredBox(color: AppColors.hairline)
+                : Image.memory(bytes, fit: BoxFit.cover, cacheWidth: 64, cacheHeight: 64),
+          ),
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(
+          child: Text(
+            'Matching this photo',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppColors.ink80),
+          ),
+        ),
+        InkWell(
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          onTap: controller.clearPickedSearchImage,
+          child: const Padding(
+            padding: EdgeInsets.all(AppSpacing.xs),
+            child: Icon(Icons.close_rounded, size: 17, color: AppColors.ink48),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ImageSearchHint extends StatelessWidget {
+  const _ImageSearchHint({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: AppSpacing.xxs),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.image_search_rounded, size: 14, color: AppColors.ink48),
+            const SizedBox(width: AppSpacing.xs),
+            Flexible(
+              child: Text(
+                'Or match a photo instead of describing it',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppColors.ink48),
+              ),
+            ),
+          ],
+        ),
       ),
-      child: Row(
-        children: [
-          const Icon(Icons.search_rounded, size: 19, color: AppColors.ink48),
-          const SizedBox(width: AppSpacing.sm),
-          Expanded(
-            child: TextField(
-              controller: controller.searchTextController,
-              onTapOutside: (_) => FocusScope.of(context).unfocus(),
-              onSubmitted: (_) => controller.searchUsingText(isSearchUsingImage: false),
-              textInputAction: TextInputAction.search,
-              style: Theme.of(context).textTheme.bodyMedium,
-              decoration: const InputDecoration(
-                hintText: 'Search your photos and videos',
-                hintStyle: TextStyle(color: AppColors.ink48),
-                border: InputBorder.none,
-                isCollapsed: true,
-                contentPadding: EdgeInsets.symmetric(vertical: AppSpacing.md),
+    );
+  }
+}
+
+// A live listener on the text field, not just a GetX rebuild - typing
+// doesn't call update(), so without this the button's enabled state would
+// only refresh whenever something unrelated happened to rebuild the screen.
+class _SearchSubmitButton extends StatelessWidget {
+  const _SearchSubmitButton({required this.controller});
+
+  final NativeController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: controller.searchTextController,
+      builder: (context, _) {
+        final enabled =
+            controller.pickedSearchImageUri != null ||
+            controller.searchTextController.text.trim().isNotEmpty;
+
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: enabled ? controller.runSearch : null,
+            borderRadius: BorderRadius.circular(AppRadius.pill),
+            child: Container(
+              width: 34,
+              height: 34,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: enabled ? AppColors.primary : AppColors.hairline,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.arrow_forward_rounded,
+                size: 18,
+                color: enabled ? AppColors.onPrimary : AppColors.ink48,
               ),
             ),
           ),
-          InkWell(
-            borderRadius: BorderRadius.circular(AppRadius.pill),
-            onTap: () => controller.searchUsingText(isSearchUsingImage: true),
-            child: const Padding(
-              padding: EdgeInsets.all(AppSpacing.xs),
-              child: Icon(Icons.image_search_rounded, size: 19, color: AppColors.ink48),
-            ),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 }

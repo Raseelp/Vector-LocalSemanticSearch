@@ -43,6 +43,13 @@ class NativeController extends GetxController {
   TextEditingController searchTextController = TextEditingController();
   ContentMode selectedContentMode = ContentMode.both;
   final Map<String, Uint8List> imageCache = {};
+
+  // The image attached for a reverse-image search - picking one no longer
+  // searches immediately. It's held here (shown as a preview chip) until
+  // the user explicitly submits, same as typing text doesn't search until
+  // Search is pressed.
+  String? pickedSearchImageUri;
+  Uint8List? pickedSearchImageBytes;
   late StreamSubscription<Map<String, dynamic>> _progressSub;
   IndexedFolder scanResult = IndexedFolder.empty();
 
@@ -56,7 +63,7 @@ class NativeController extends GetxController {
   // "Recently indexed" strip: a small, bounded, newest-first list of files
   // shown while a scan is running. Deliberately its own cache (not
   // imageCache) - a concurrent search clears imageCache on every run (see
-  // searchUsingText), which would otherwise blank this strip mid-scan.
+  // runSearch), which would otherwise blank this strip mid-scan.
   // Fetching is throttled on purpose: the scan can embed several files per
   // progress tick, and fetching a thumbnail for every single one would
   // compete with the scan itself for I/O/CPU. One fetch per tick keeps the
@@ -131,14 +138,41 @@ class NativeController extends GetxController {
     await checkModelsReady();
   }
 
-  Future<void> searchUsingText({required bool isSearchUsingImage}) async {
-    // A blank text query still tokenizes and runs - CLIP just has nothing
-    // meaningful to match against, so results end up arbitrary with no
-    // indication why. Nothing to check for the image-search path; a null
-    // uri from a cancelled picker is already handled below.
-    if (!isSearchUsingImage && searchTextController.text.trim().isEmpty) {
-      return;
+  // Just picks and previews - doesn't search. Mirrors typing text: nothing
+  // runs until the user submits.
+  Future<void> pickSearchImage() async {
+    final uri = await NativeServices().pickImageForSearching();
+    if (uri == null) return;
+
+    pickedSearchImageUri = uri;
+    pickedSearchImageBytes = null;
+    update();
+
+    try {
+      pickedSearchImageBytes = await NativeServices().loadImageBytes(
+        uri: uri,
+        isCompressed: true,
+      );
+    } catch (_) {
+      // Preview failed to load - the search itself still works from the
+      // uri alone, so this isn't fatal, just a missing thumbnail.
     }
+    update();
+  }
+
+  void clearPickedSearchImage() {
+    pickedSearchImageUri = null;
+    pickedSearchImageBytes = null;
+    update();
+  }
+
+  // The one submit action, whichever input is active - an attached image
+  // takes priority over typed text (matching what's actually shown in the
+  // search bar), never both at once.
+  Future<void> runSearch() async {
+    final imageUri = pickedSearchImageUri;
+    final query = searchTextController.text.trim();
+    if (imageUri == null && query.isEmpty) return;
 
     try {
       isSearching = true;
@@ -147,17 +181,14 @@ class NativeController extends GetxController {
       searchResults = [];
       imageCache.clear();
 
-      if (isSearchUsingImage) {
-        final uri = await NativeServices().pickImageForSearching();
-        if (uri != null) {
-          searchResults = await NativeServices().searchByImage(
-            uri: uri,
-            limit: sliderValue.round().toInt(),
-          );
-        }
+      if (imageUri != null) {
+        searchResults = await NativeServices().searchByImage(
+          uri: imageUri,
+          limit: sliderValue.round().toInt(),
+        );
       } else {
         searchResults = await NativeServices().searchImages(
-          query: searchTextController.text,
+          query: query,
           limitNumber: sliderValue.round().toInt(),
         );
       }
