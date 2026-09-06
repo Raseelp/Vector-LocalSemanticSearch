@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import org.pytorch.Tensor
 import org.pytorch.torchvision.TensorImageUtils
+import kotlin.math.ceil
 
 object ImagePreprocessor {
 
@@ -38,24 +39,49 @@ object ImagePreprocessor {
     }
 
     fun bitmapToTensor(bitmap: Bitmap): Tensor {
-        val scaled = if (bitmap.width == IMAGE_SIZE && bitmap.height == IMAGE_SIZE) {
-            bitmap
-        } else {
-            Bitmap.createScaledBitmap(bitmap, IMAGE_SIZE, IMAGE_SIZE, true)
-        }
+        val cropped = resizeAndCenterCrop(bitmap)
 
         val tensor = TensorImageUtils.bitmapToFloat32Tensor(
-            scaled,
+            cropped,
             MEAN,
             STD
         )
 
-        // Only recycle the scaled copy, never the original passed in
-        if (scaled !== bitmap) {
-            scaled.recycle()
+        // Only recycle the cropped copy, never the original passed in
+        if (cropped !== bitmap) {
+            cropped.recycle()
         }
 
         return tensor
+    }
+
+    // CLIP's own preprocessing resizes the shorter side to 224 and center-
+    // crops the rest, so a photo keeps its real proportions - only the
+    // excess on the long side gets trimmed. Stretching straight to a
+    // 224x224 square (what this used to do) warps every non-square photo,
+    // which is most of them.
+    private fun resizeAndCenterCrop(bitmap: Bitmap): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+
+        if (width == IMAGE_SIZE && height == IMAGE_SIZE) return bitmap
+
+        val shorterSide = minOf(width, height)
+        val scale = IMAGE_SIZE.toFloat() / shorterSide
+        val scaledWidth = ceil(width * scale).toInt().coerceAtLeast(IMAGE_SIZE)
+        val scaledHeight = ceil(height * scale).toInt().coerceAtLeast(IMAGE_SIZE)
+
+        val resized = Bitmap.createScaledBitmap(bitmap, scaledWidth, scaledHeight, true)
+
+        val cropLeft = ((scaledWidth - IMAGE_SIZE) / 2).coerceAtLeast(0)
+        val cropTop = ((scaledHeight - IMAGE_SIZE) / 2).coerceAtLeast(0)
+        val cropped = Bitmap.createBitmap(resized, cropLeft, cropTop, IMAGE_SIZE, IMAGE_SIZE)
+
+        if (resized !== cropped) {
+            resized.recycle()
+        }
+
+        return cropped
     }
 
     private fun loadAndResizeBitmap(
@@ -86,12 +112,7 @@ object ImagePreprocessor {
                 val sampledBitmap = BitmapFactory.decodeStream(stream2, null, decodeOptions)
                     ?: return null
 
-                val finalBitmap = Bitmap.createScaledBitmap(
-                    sampledBitmap,
-                    IMAGE_SIZE,
-                    IMAGE_SIZE,
-                    true
-                )
+                val finalBitmap = resizeAndCenterCrop(sampledBitmap)
 
                 if (finalBitmap !== sampledBitmap) {
                     sampledBitmap.recycle()
