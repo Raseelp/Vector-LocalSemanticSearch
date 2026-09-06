@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:twentyonevision/controllers/native_controller.dart';
 import 'package:twentyonevision/models/meta_data_model.dart';
+import 'package:twentyonevision/utils/app_colors.dart';
 
 class ImageViewScreen extends StatelessWidget {
   const ImageViewScreen({super.key, required this.imageBytes});
@@ -356,10 +357,10 @@ class _InfoRow extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-            color: Colors.blue.withValues(alpha: 0.2),
+            color: AppColors.primary.withValues(alpha: 0.2),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Icon(icon, color: Colors.blue, size: 20),
+          child: Icon(icon, color: AppColors.primary, size: 20),
         ),
         const SizedBox(width: 12),
         Expanded(

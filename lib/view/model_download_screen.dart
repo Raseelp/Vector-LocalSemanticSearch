@@ -3,6 +3,8 @@ import 'package:get/get.dart';
 import 'package:twentyonevision/controllers/native_controller.dart';
 import 'package:twentyonevision/models/model_status.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
+import 'package:twentyonevision/utils/app_radius.dart';
+import 'package:twentyonevision/utils/app_spacing.dart';
 
 class ModelDownloadScreen extends StatelessWidget {
   const ModelDownloadScreen({super.key});
@@ -19,47 +21,38 @@ class ModelDownloadScreen extends StatelessWidget {
               );
 
         return Scaffold(
-          backgroundColor: AppColors.backGroundColor,
-          body: DecoratedBox(
-            decoration: const BoxDecoration(gradient: AppColors.screenGradient),
-            child: SafeArea(
-              child: Center(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(24),
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 440),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _HeaderIcon(isDownloading: controller.isDownloadingModels),
-                        const SizedBox(height: 24),
-                        Text(
-                          'One-time setup',
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.titleLarge
-                              ?.copyWith(fontWeight: FontWeight.w800),
+          backgroundColor: AppColors.canvas,
+          body: SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(AppSpacing.xl),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _HeaderIcon(isDownloading: controller.isDownloadingModels),
+                      const SizedBox(height: AppSpacing.xl),
+                      Text(
+                        'One-time setup',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.headlineSmall,
+                      ),
+                      const SizedBox(height: AppSpacing.sm),
+                      Text(
+                        'Vector needs its on-device AI models before it can '
+                        'search your photos and videos. This happens once - '
+                        'everything after this runs fully offline, and your '
+                        'media never leaves this device.',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: AppColors.ink48,
+                          height: 1.5,
                         ),
-                        const SizedBox(height: 10),
-                        Text(
-                          'Vector needs its on-device AI models '
-                          'before it can search your photos and videos. '
-                          'This happens once — everything after this runs '
-                          'fully offline, and your media never leaves this '
-                          'device.',
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.bodyMedium
-                              ?.copyWith(
-                                color: AppColors.textSecondary,
-                                height: 1.5,
-                              ),
-                        ),
-                        const SizedBox(height: 28),
-                        _DownloadCard(
-                          controller: controller,
-                          totalBytes: totalBytes,
-                        ),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(height: AppSpacing.xxl),
+                      _DownloadCard(controller: controller, totalBytes: totalBytes),
+                    ],
                   ),
                 ),
               ),
@@ -79,25 +72,16 @@ class _HeaderIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 84,
-      height: 84,
+      width: 72,
+      height: 72,
       decoration: BoxDecoration(
-        gradient: AppColors.heroGradient,
-        borderRadius: BorderRadius.circular(26),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primarybuttonColor.withValues(alpha: 0.25),
-            blurRadius: 26,
-            offset: const Offset(0, 12),
-          ),
-        ],
+        color: AppColors.parchment,
+        borderRadius: BorderRadius.circular(AppRadius.xl),
       ),
       child: Icon(
-        isDownloading
-            ? Icons.downloading_rounded
-            : Icons.auto_awesome_rounded,
-        color: Colors.white,
-        size: 38,
+        isDownloading ? Icons.downloading_rounded : Icons.auto_awesome_rounded,
+        color: AppColors.primary,
+        size: 32,
       ),
     );
   }
@@ -113,18 +97,11 @@ class _DownloadCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(AppSpacing.lg),
       decoration: BoxDecoration(
-        color: AppColors.surfaceColor.withValues(alpha: 0.94),
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: AppColors.borderColor.withValues(alpha: 0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.shadowColor.withValues(alpha: 0.4),
-            blurRadius: 26,
-            offset: const Offset(0, 14),
-          ),
-        ],
+        color: AppColors.canvas,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: AppColors.hairline),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -134,66 +111,48 @@ class _DownloadCard extends StatelessWidget {
           ] else ...[
             Row(
               children: [
-                const Icon(
-                  Icons.sd_storage_outlined,
-                  color: AppColors.primarybuttonColor,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  totalBytes != null
-                      ? 'Download size: ${ModelDownloadProgress.formatBytes(totalBytes!)}'
-                      : 'Preparing download info...',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textPrimary,
+                const Icon(Icons.sd_storage_outlined, color: AppColors.ink48, size: 18),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(
+                    totalBytes != null
+                        ? 'Download size: ${ModelDownloadProgress.formatBytes(totalBytes!)}'
+                        : 'Preparing download info...',
+                    style: Theme.of(context).textTheme.titleSmall,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: AppSpacing.xs),
             Text(
-              'A stable connection is recommended — the download can '
+              'A stable connection is recommended - the download can '
               'resume if interrupted.',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: AppColors.textSecondary,
+                color: AppColors.ink48,
                 height: 1.4,
               ),
             ),
           ],
           if (controller.downloadError.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.accentSoft,
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Icon(
-                    Icons.error_outline,
-                    color: AppColors.dangerColor,
-                    size: 18,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      controller.downloadError,
-                      style: const TextStyle(
-                        color: AppColors.dangerColor,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 13,
-                      ),
+            const SizedBox(height: AppSpacing.base),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.error_outline, color: AppColors.danger, size: 18),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(
+                    controller.downloadError,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppColors.danger,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ],
-          const SizedBox(height: 20),
+          const SizedBox(height: AppSpacing.lg),
           _ActionRow(controller: controller),
         ],
       ),
@@ -215,48 +174,33 @@ class _ProgressSection extends StatelessWidget {
       children: [
         Row(
           children: [
-            const Expanded(
-              child: Text(
-                'Downloading models...',
-                style: TextStyle(
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.textPrimary,
-                ),
-              ),
+            Expanded(
+              child: Text('Downloading models...', style: Theme.of(context).textTheme.titleSmall),
             ),
             Text(
               '$percent%',
-              style: const TextStyle(
-                fontWeight: FontWeight.w900,
-                color: AppColors.primarybuttonColor,
-              ),
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(color: AppColors.primary),
             ),
           ],
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: AppSpacing.sm),
         ClipRRect(
-          borderRadius: BorderRadius.circular(999),
+          borderRadius: BorderRadius.circular(AppRadius.pill),
           child: LinearProgressIndicator(
-            minHeight: 10,
-            value: progress.overallTotalBytes == 0
-                ? null
-                : progress.overallFraction,
-            backgroundColor: AppColors.surfaceAccent,
-            valueColor: const AlwaysStoppedAnimation<Color>(
-              AppColors.primarybuttonColor,
-            ),
+            minHeight: 6,
+            value: progress.overallTotalBytes == 0 ? null : progress.overallFraction,
+            backgroundColor: AppColors.hairline,
+            valueColor: const AlwaysStoppedAnimation<Color>(AppColors.primary),
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: AppSpacing.sm),
         Text(
           progress.overallTotalBytes == 0
               ? 'Starting...'
               : '${ModelDownloadProgress.formatBytes(progress.overallBytesDownloaded)} '
                     'of ${ModelDownloadProgress.formatBytes(progress.overallTotalBytes)}'
-                    '${progress.modelFileName.isNotEmpty ? ' — ${progress.modelFileName}' : ''}',
-          style: Theme.of(
-            context,
-          ).textTheme.bodySmall?.copyWith(color: AppColors.textSecondary),
+                    '${progress.modelFileName.isNotEmpty ? ' - ${progress.modelFileName}' : ''}',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppColors.ink48),
         ),
       ],
     );
@@ -271,66 +215,61 @@ class _ActionRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (controller.isDownloadingModels) {
-      return Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: controller.cancelModelDownload,
-          borderRadius: BorderRadius.circular(16),
-          child: Ink(
-            padding: const EdgeInsets.symmetric(vertical: 14),
-            decoration: BoxDecoration(
-              color: AppColors.accentSoft,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: const Center(
-              child: Text(
-                'Cancel',
-                style: TextStyle(
-                  color: AppColors.dangerColor,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-          ),
-        ),
+      return _PillButton(
+        label: 'Cancel',
+        onTap: controller.cancelModelDownload,
+        outlined: true,
       );
     }
 
     final hasError = controller.downloadError.isNotEmpty;
+    return _PillButton(
+      label: hasError ? 'Retry download' : 'Download models',
+      icon: hasError ? Icons.refresh_rounded : Icons.download_rounded,
+      onTap: controller.startModelDownload,
+    );
+  }
+}
+
+class _PillButton extends StatelessWidget {
+  const _PillButton({
+    required this.label,
+    required this.onTap,
+    this.icon,
+    this.outlined = false,
+  });
+
+  final String label;
+  final VoidCallback onTap;
+  final IconData? icon;
+  final bool outlined;
+
+  @override
+  Widget build(BuildContext context) {
+    final foreground = outlined ? AppColors.ink : AppColors.onPrimary;
 
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: controller.startModelDownload,
-        borderRadius: BorderRadius.circular(16),
-        child: Ink(
-          padding: const EdgeInsets.symmetric(vertical: 14),
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
           decoration: BoxDecoration(
-            color: AppColors.primarybuttonColor,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.primarybuttonColor.withValues(alpha: 0.25),
-                blurRadius: 16,
-                offset: const Offset(0, 8),
-              ),
-            ],
+            color: outlined ? Colors.transparent : AppColors.primary,
+            borderRadius: BorderRadius.circular(AppRadius.pill),
+            border: outlined ? Border.all(color: AppColors.hairline) : null,
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                hasError ? Icons.refresh_rounded : Icons.download_rounded,
-                color: Colors.white,
-                size: 20,
-              ),
-              const SizedBox(width: 8),
+              if (icon != null) ...[
+                Icon(icon, color: foreground, size: 18),
+                const SizedBox(width: AppSpacing.sm),
+              ],
               Text(
-                hasError ? 'Retry download' : 'Download models',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
-                ),
+                label,
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(color: foreground),
               ),
             ],
           ),

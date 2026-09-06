@@ -1,39 +1,31 @@
 import 'package:flutter/material.dart';
 
+/// One accent, everywhere. Depth comes from moving between these three
+/// surface tones (canvas -> parchment -> pearl), never from a shadow or a
+/// second color - see AppRadius/AppSpacing for the rest of the system.
 class AppColors {
   AppColors._();
 
-  static const Color backGroundColor = Color(0xFFF5F1E8);
-  static const Color primarybuttonColor = Color(0xFF165E59);
-  static const Color secondoryButtonColor = Color(0xFFE8BC52);
-  static const Color surfaceColor = Color(0xFFFFFCF7);
-  static const Color elevatedSurface = Color(0xFFF1E4CF);
-  static const Color surfaceAccent = Color(0xFFD7E8E2);
-  static const Color accentColor = Color(0xFFE27A52);
-  static const Color accentSoft = Color(0xFFF7D9CB);
-  static const Color borderColor = Color(0xFF1B2233);
-  static const Color textPrimary = Color(0xFF1B2233);
-  static const Color textSecondary = Color(0xFF5D6777);
-  static const Color successColor = Color(0xFF3D9968);
-  static const Color dangerColor = Color(0xFFD05757);
-  static const Color infoColor = Color(0xFF6B8BFF);
-  static const Color shadowColor = Color(0x331B2233);
+  // Accent - the ONLY interactive color. Links, primary actions, focus,
+  // progress fills, selection. Nothing else in the app uses it decoratively.
+  static const Color primary = Color(0xFF165E59);
+  static const Color primaryFocus = Color(0xFF1F7A73);
+  static const Color onPrimary = Color(0xFFFFFFFF);
 
-  static const LinearGradient screenGradient = LinearGradient(
-    begin: Alignment.topCenter,
-    end: Alignment.bottomCenter,
-    colors: [Color(0xFFF8F4EC), Color(0xFFF1E8D9)],
-  );
+  // Text - a warm near-black, not pure black.
+  static const Color ink = Color(0xFF1A1D1C);
+  static const Color ink80 = Color(0xFF3D4240);
+  static const Color ink48 = Color(0xFF7C8280);
 
-  static const LinearGradient heroGradient = LinearGradient(
-    begin: Alignment.topLeft,
-    end: Alignment.bottomRight,
-    colors: [Color(0xFF1F6C67), Color(0xFF2A837A)],
-  );
+  // Hairlines - the only separators. Never a heavy border.
+  static const Color hairline = Color(0xFFE2E4E1);
+  static const Color dividerSoft = Color(0xFFEFF1EE);
 
-  static const LinearGradient accentGradient = LinearGradient(
-    begin: Alignment.topLeft,
-    end: Alignment.bottomRight,
-    colors: [Color(0xFFF0C960), Color(0xFFE68C56)],
-  );
+  // Surfaces - the three tones sections move between.
+  static const Color canvas = Color(0xFFFFFFFF);
+  static const Color parchment = Color(0xFFF4F6F3);
+  static const Color pearl = Color(0xFFFAFBFA);
+
+  // Status - for state only, never as decoration or a second brand color.
+  static const Color danger = Color(0xFFB14032);
 }

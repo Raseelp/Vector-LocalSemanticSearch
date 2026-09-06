@@ -15,10 +15,10 @@ class AppGate extends StatelessWidget {
       builder: (controller) {
         if (controller.isCheckingModels) {
           return const Scaffold(
-            backgroundColor: AppColors.backGroundColor,
+            backgroundColor: AppColors.canvas,
             body: Center(
               child: CircularProgressIndicator(
-                color: AppColors.primarybuttonColor,
+                color: AppColors.primary,
               ),
             ),
           );

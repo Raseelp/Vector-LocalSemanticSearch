@@ -14,39 +14,58 @@ class TwentyOneVision extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme =
-        ColorScheme.fromSeed(
-          seedColor: AppColors.primarybuttonColor,
-          brightness: Brightness.light,
-        ).copyWith(
-          primary: AppColors.primarybuttonColor,
-          secondary: AppColors.secondoryButtonColor,
-          surface: AppColors.surfaceColor,
-          error: AppColors.dangerColor,
-        );
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: AppColors.primary,
+      brightness: Brightness.light,
+    ).copyWith(
+      primary: AppColors.primary,
+      secondary: AppColors.primary,
+      surface: AppColors.canvas,
+      error: AppColors.danger,
+    );
+
+    // Material's default text theme reaches for weight 500 on titles and
+    // labels - the one weight this app never uses. Every role below is
+    // pinned to 400 (body), 600 (labels/emphasis), or 700 (headlines).
+    final baseText = GoogleFonts.spaceGroteskTextTheme();
+    final textTheme = baseText.copyWith(
+      displayLarge: baseText.displayLarge?.copyWith(fontWeight: FontWeight.w700),
+      displayMedium: baseText.displayMedium?.copyWith(fontWeight: FontWeight.w700),
+      displaySmall: baseText.displaySmall?.copyWith(fontWeight: FontWeight.w700),
+      headlineLarge: baseText.headlineLarge?.copyWith(fontWeight: FontWeight.w700),
+      headlineMedium: baseText.headlineMedium?.copyWith(fontWeight: FontWeight.w700),
+      headlineSmall: baseText.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+      titleLarge: baseText.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+      titleMedium: baseText.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+      titleSmall: baseText.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+      bodyLarge: baseText.bodyLarge?.copyWith(fontWeight: FontWeight.w400),
+      bodyMedium: baseText.bodyMedium?.copyWith(fontWeight: FontWeight.w400),
+      bodySmall: baseText.bodySmall?.copyWith(fontWeight: FontWeight.w400),
+      labelLarge: baseText.labelLarge?.copyWith(fontWeight: FontWeight.w600),
+      labelMedium: baseText.labelMedium?.copyWith(fontWeight: FontWeight.w600),
+      labelSmall: baseText.labelSmall?.copyWith(fontWeight: FontWeight.w600),
+    ).apply(bodyColor: AppColors.ink, displayColor: AppColors.ink);
 
     return GetMaterialApp(
       initialBinding: InitBindings(),
       home: const AppGate(),
       theme: ThemeData(
         useMaterial3: true,
-        scaffoldBackgroundColor: AppColors.backGroundColor,
+        scaffoldBackgroundColor: AppColors.canvas,
         colorScheme: colorScheme,
-        textTheme: GoogleFonts.spaceGroteskTextTheme().apply(
-          bodyColor: AppColors.textPrimary,
-          displayColor: AppColors.textPrimary,
-        ),
+        textTheme: textTheme,
         appBarTheme: const AppBarTheme(
           backgroundColor: Colors.transparent,
           elevation: 0,
           centerTitle: false,
-          foregroundColor: AppColors.textPrimary,
+          foregroundColor: AppColors.ink,
         ),
         sliderTheme: SliderThemeData(
-          activeTrackColor: AppColors.primarybuttonColor,
-          inactiveTrackColor: AppColors.surfaceAccent,
-          thumbColor: AppColors.accentColor,
-          overlayColor: AppColors.accentColor.withValues(alpha: 0.16),
+          activeTrackColor: AppColors.primary,
+          inactiveTrackColor: AppColors.hairline,
+          thumbColor: AppColors.primary,
+          overlayColor: AppColors.primary.withValues(alpha: 0.12),
+          trackHeight: 4,
         ),
       ),
     );
