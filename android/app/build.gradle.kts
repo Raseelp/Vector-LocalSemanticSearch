@@ -72,7 +72,7 @@ android {
             buildConfigField(
                 "String",
                 "MODEL_BASE_URL",
-                "\"https://github.com/Raseelp/TwentyOneVision/releases/download/models-v1\""
+                "\"https://github.com/Raseelp/Vector-LocalSemanticSearch/releases/download/models-v1\""
             )
         }
     }
