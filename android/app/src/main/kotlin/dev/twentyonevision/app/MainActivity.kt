@@ -492,6 +492,15 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
 
+                // Called right after the user grants notification permission
+                // mid-scan - start() was only ever fired once, at scan start,
+                // so without this the service (and its notification) never
+                // appears until the *next* scan.
+                "retryBackgroundScan" -> {
+                    ScanForegroundService.start(applicationContext)
+                    result.success(true)
+                }
+
                 else -> result.notImplemented()
             }
         }

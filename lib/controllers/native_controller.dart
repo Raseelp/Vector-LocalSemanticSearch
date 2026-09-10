@@ -592,6 +592,12 @@ class NativeController extends GetxController {
     }
 
     await checkBackgroundScanPermission();
+
+    // The service is only ever started when a scan begins - if this scan is
+    // already running, nothing else will make it appear until the next one.
+    if (isScanning && backgroundNotificationsGranted) {
+      await NativeServices().retryBackgroundScan();
+    }
   }
 
   getPickingModeString({required PickingMode pickingMode}) {

@@ -155,6 +155,10 @@ class NativeServices {
     return await _channel.invokeMethod<bool>('cancelEmbedding') ?? false;
   }
 
+  Future<void> retryBackgroundScan() async {
+    await _channel.invokeMethod<bool>('retryBackgroundScan');
+  }
+
   pickImageForSearching() async {
     return await _channel.invokeMethod('pickImage');
   }
