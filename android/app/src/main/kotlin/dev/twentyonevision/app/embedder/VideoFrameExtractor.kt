@@ -8,6 +8,19 @@ import android.os.Build
 
 object VideoFrameExtractor {
 
+    // A device only has a handful of concurrent hardware video-decoder
+    // sessions (sometimes very few on low/mid-range hardware). This app
+    // creates a MediaMetadataRetriever in two places that can run at the
+    // same time - this during a scan, and MainActivity's loadVideoThumbnail
+    // for the "recently scanned" strip fetching a thumbnail for a video
+    // this same scan just embedded. Without serializing them, both can hit
+    // that limit and silently fail (setDataSource/getFrameAtTime throwing
+    // or returning null, both swallowed) - a missing thumbnail, and/or that
+    // video getting silently skipped this run and left for the next scan
+    // to retry. Exposed so MainActivity can synchronize on the same lock -
+    // see its loadVideoThumbnail handler.
+    val decodeLock = Any()
+
     private const val DEFAULT_FRAME_COUNT = 10
 
     private fun adaptiveFrameCount(durationMs: Long): Int {
@@ -23,11 +36,11 @@ object VideoFrameExtractor {
         context: Context,
         uri: Uri,
         frameCount: Int = -1
-    ): List<Pair<Long, Bitmap>> {
+    ): List<Pair<Long, Bitmap>> = synchronized(decodeLock) {
 
         val retriever = MediaMetadataRetriever()
 
-        return try {
+        return@synchronized try {
             retriever.setDataSource(context, uri)
 
             val durationMs = retriever

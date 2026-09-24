@@ -11,6 +11,11 @@ class ImageMetadata {
   final String cameraModel;
   final double? latitude;
   final double? longitude;
+  // Video only - 0 for an image. Kept on this same model rather than a
+  // separate VideoMetadata type since everything else here (name/size/
+  // mime/resolution) already applies equally to both; the sheet just shows
+  // this row only when it's non-zero.
+  final int durationMs;
 
   const ImageMetadata({
     required this.imagePath,
@@ -25,6 +30,7 @@ class ImageMetadata {
     required this.cameraModel,
     this.latitude,
     this.longitude,
+    this.durationMs = 0,
   });
 
   factory ImageMetadata.fromMap(Map<dynamic, dynamic> map) {
@@ -41,6 +47,7 @@ class ImageMetadata {
       cameraModel: map['cameraModel'] ?? '',
       latitude: map['latitude'] as double?,
       longitude: map['longitude'] as double?,
+      durationMs: map['durationMs'] as int? ?? 0,
     );
   }
 
@@ -58,6 +65,7 @@ class ImageMetadata {
       cameraModel: '',
       latitude: null,
       longitude: null,
+      durationMs: 0,
     );
   }
 
@@ -75,6 +83,7 @@ class ImageMetadata {
       'cameraModel': cameraModel,
       'latitude': latitude,
       'longitude': longitude,
+      'durationMs': durationMs,
     };
   }
 
@@ -91,6 +100,7 @@ class ImageMetadata {
     String? cameraModel,
     double? latitude,
     double? longitude,
+    int? durationMs,
   }) {
     return ImageMetadata(
       imagePath: imagePath ?? this.imagePath,
@@ -105,7 +115,15 @@ class ImageMetadata {
       cameraModel: cameraModel ?? this.cameraModel,
       latitude: latitude ?? this.latitude,
       longitude: longitude ?? this.longitude,
+      durationMs: durationMs ?? this.durationMs,
     );
+  }
+
+  String get durationFormatted {
+    final totalSeconds = durationMs ~/ 1000;
+    final minutes = (totalSeconds ~/ 60).toString().padLeft(2, '0');
+    final seconds = (totalSeconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
   }
 
   String get resolution => '${width}x$height';

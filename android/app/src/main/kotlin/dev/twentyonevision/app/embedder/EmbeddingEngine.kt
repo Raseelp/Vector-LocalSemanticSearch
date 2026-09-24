@@ -38,6 +38,7 @@ class EmbeddingEngine(
     // prep around it, so a wait here is short: at most one batch's worth
     // of inference time, not the other side's whole operation.
     private val visionLock = Any()
+    private val textLock = Any()
 
     private var lastEmit: Long = 0L
     private var startTimeMs: Long = 0L
@@ -113,10 +114,15 @@ class EmbeddingEngine(
         val longs = LongArray(77) { tokens[it].toLong() }
         val tensor = Tensor.fromBlob(longs, longArrayOf(1, 77))
 
-        return text
-            .forward(IValue.from(tensor))
-            .toTensor()
-            .dataAsFloatArray
+        // Same reason as visionLock: a Module isn't safe to call from two
+        // threads at once, and text encoding now happens off the main
+        // thread (collections, search) so calls can overlap.
+        return synchronized(textLock) {
+            text
+                .forward(IValue.from(tensor))
+                .toTensor()
+                .dataAsFloatArray
+        }
     }
 
     fun embedImages(
@@ -178,7 +184,10 @@ class EmbeddingEngine(
             val label0 = getDisplayPath(folderUriString)
 
             // Surface progress during the (possibly slow) SAF traversal so
-            // the UI doesn't just sit on "Preparing..." looking hung.
+            // the UI doesn't just sit on "Preparing..." looking hung. No
+            // folder label here on purpose - label0 can be an arbitrarily
+            // long path, and the UI only has one line to show this in
+            // before a total is known.
             var foundSoFar = 0
             val onFileFound: () -> Unit = {
                 foundSoFar++
@@ -189,7 +198,7 @@ class EmbeddingEngine(
                             total = 0, processed = 0, embedded = 0, skipped = 0,
                             elapsedMs = now - startTimeMs,
                             done = false,
-                            path = "$label0 — found $foundSoFar files so far"
+                            path = "Found $foundSoFar files so far"
                         )
                     )
                     lastEmit = now
@@ -232,6 +241,50 @@ class EmbeddingEngine(
         var processed = 0
         var embedded = 0
         var skipped = 0
+        var failed = 0
+
+        // Already-in-the-store files are filtered out here, upfront -
+        // before shuffling/chunking anything - rather than left for
+        // submitChunk/the video loop's own per-item check further down to
+        // discover one at a time. A resumed scan of a mostly-finished
+        // library needs this: if the done and not-done files stay mixed
+        // together and get shuffled as one list, every chunk ends up with
+        // at least one new file in it, so nothing is ever a fully-free,
+        // instant-skip chunk - the progress bar crawls from 0 instead of
+        // jumping straight to "8000 already done", and every chunk pays
+        // for a real (now much smaller) inference call instead of only the
+        // chunks with genuinely new files in them. Splitting first
+        // restores both: the done portion is counted immediately below,
+        // and only the genuinely new portion goes through shuffling and
+        // the chunked inference pipeline.
+        val newImages = mutableListOf<ImageSource>()
+        for (img in imageFiles) {
+            try {
+                val hash = HashUtils.identityHash(img.size, img.lastModified, img.name)
+                if (existingHashes.contains(hash)) skipped++ else newImages.add(img)
+            } catch (e: Exception) {
+                skipped++
+                failed++
+            }
+        }
+        val newVideos = mutableListOf<VideoSource>()
+        for (video in videoFiles) {
+            try {
+                val hash = HashUtils.identityHash(video.size, video.lastModified, video.name)
+                if (existingHashes.contains(hash)) skipped++ else newVideos.add(video)
+            } catch (e: Exception) {
+                skipped++
+                failed++
+            }
+        }
+        processed += skipped
+        if (skipped > 0) {
+            // Forced through even if it lands within the normal throttle
+            // window - this jump should read as instant, not wait out
+            // PROGRESS_INTERVAL_MS like a regular tick would.
+            lastEmit = 0L
+            emitProgressIfNeeded(total, processed, embedded, skipped, failed, label, onProgress)
+        }
 
         val batchSize = 10
         val batch = mutableListOf<EmbeddingRecord>()
@@ -265,6 +318,7 @@ class EmbeddingEngine(
                         }
                     } catch (e: Exception) {
                         skipped++
+                failed++
                     }
                 }
                 val futures = toEmbed.map { (img, _) ->
@@ -275,7 +329,18 @@ class EmbeddingEngine(
                 return PendingChunk(toEmbed, futures)
             }
 
-            val chunks = imageFiles.chunked(INFERENCE_BATCH_SIZE)
+            // Shuffled here, not at enumeration - order only actually
+            // matters for files that are genuinely going to be embedded
+            // this run (see the doc above on newImages/newVideos). Both
+            // MediaStore and SAF hand back a fixed, roughly date/name-
+            // ordered sequence, so without this, a scan that's still
+            // running or gets interrupted again leaves search only able to
+            // find whatever contiguous slice of the new content got
+            // embedded first (e.g. only the oldest of this batch of new
+            // photos). Shuffling means whatever's newly embedded at any
+            // given moment is a random cross-section of what's new,
+            // instead of skewed toward "whichever new file came first."
+            val chunks = newImages.shuffled().chunked(INFERENCE_BATCH_SIZE)
             var prefetched: PendingChunk? = null
 
             for (chunkIndex in chunks.indices) {
@@ -293,6 +358,7 @@ class EmbeddingEngine(
                     val tensor = try { current.futures[idx].get() } catch (e: Exception) { null }
                     if (tensor == null) {
                         skipped++
+                failed++
                     } else {
                         tensors.add(tensor)
                         meta.add(pair)
@@ -305,6 +371,7 @@ class EmbeddingEngine(
                         val embedding = embeddings[idx]
                         if (embedding == null) {
                             skipped++
+                failed++
                         } else {
                             val (img, hash) = pair
                             batch.add(
@@ -332,7 +399,7 @@ class EmbeddingEngine(
                 }
 
                 processed += chunk.size
-                emitProgressIfNeeded(total, processed, embedded, skipped, label, onProgress)
+                emitProgressIfNeeded(total, processed, embedded, skipped, failed, label, onProgress)
             }
 
             if (isCancelled && batch.isNotEmpty()) {
@@ -344,7 +411,11 @@ class EmbeddingEngine(
         }
 
         if (!isCancelled) {
-            for (video in videoFiles) {
+            // Shuffled for the same reason newImages is above - only the
+            // genuinely new videos, so an interrupted run's videos are a
+            // random cross-section of what's new too, not just "whichever
+            // came first."
+            for (video in newVideos.shuffled()) {
 
                 if (isCancelled) {
                     if (batch.isNotEmpty()) { store.appendBatch(batch); batch.clear() }
@@ -366,6 +437,7 @@ class EmbeddingEngine(
 
                         if (frameRecords.isEmpty()) {
                             skipped++
+                failed++
                         } else {
                             batch.addAll(frameRecords)
                             existingHashes.add(hash)
@@ -386,10 +458,11 @@ class EmbeddingEngine(
                     }
                 } catch (e: Exception) {
                     skipped++
+                failed++
                 }
 
                 processed++
-                emitProgressIfNeeded(total, processed, embedded, skipped, label, onProgress)
+                emitProgressIfNeeded(total, processed, embedded, skipped, failed, label, onProgress)
             }
         }
 
@@ -406,7 +479,8 @@ class EmbeddingEngine(
                 elapsedMs = elapsed,
                 done = true,
                 path = label,
-                recentItems = recentItems.toList()
+                recentItems = recentItems.toList(),
+                failed = failed
             )
         )
 
@@ -531,6 +605,26 @@ class EmbeddingEngine(
         folderUri: Uri,
         onFileFound: () -> Unit = {}
     ): List<ImageSource> {
+        // Fast path: this folder's files are already in MediaStore's own
+        // index (see FolderMediaStoreScan for exactly when that's true and
+        // when it isn't) - query that instead of walking SAF live. Only
+        // trusted when it comes back non-empty - null (not confident this
+        // is correct) and empty (MediaStore genuinely has nothing indexed
+        // under this path, which can happen even for a real, non-empty
+        // folder - see FolderMediaStoreScan's DATA/RELATIVE_PATH doc) are
+        // treated the same way: fall through to the real, verified walk.
+        // The cost of double-checking a folder that turns out to actually
+        // be empty is negligible; silently trusting a false empty isn't
+        // worth the risk.
+        val relativePath = FolderMediaStoreScan.resolvePrimaryRelativePath(folderUri)
+        if (relativePath != null) {
+            val fast = FolderMediaStoreScan.queryImages(context, relativePath)
+            if (!fast.isNullOrEmpty()) return fast
+        }
+
+        // SafDocument already carries size/lastModified/name resolved from
+        // the same query that found it - no per-file re-query needed here,
+        // unlike the old DocumentFile-based version this replaced.
         return SafUtils.listImageFiles(
             context, folderUri,
             isCancelled = { isCancelled },
@@ -538,9 +632,9 @@ class EmbeddingEngine(
         ).map {
             ImageSource(
                 uri = it.uri,
-                size = it.length(),
-                lastModified = it.lastModified(),
-                name = it.name ?: ""
+                size = it.size,
+                lastModified = it.lastModified,
+                name = it.name
             )
         }
     }
@@ -549,6 +643,12 @@ class EmbeddingEngine(
         folderUri: Uri,
         onFileFound: () -> Unit = {}
     ): List<VideoSource> {
+        val relativePath = FolderMediaStoreScan.resolvePrimaryRelativePath(folderUri)
+        if (relativePath != null) {
+            val fast = FolderMediaStoreScan.queryVideos(context, relativePath)
+            if (!fast.isNullOrEmpty()) return fast
+        }
+
         return SafUtils.listVideoFiles(
             context, folderUri,
             isCancelled = { isCancelled },
@@ -556,9 +656,9 @@ class EmbeddingEngine(
         ).map {
             VideoSource(
                 uri = it.uri,
-                size = it.length(),
-                lastModified = it.lastModified(),
-                name = it.name ?: ""
+                size = it.size,
+                lastModified = it.lastModified,
+                name = it.name
             )
         }
     }
@@ -718,15 +818,36 @@ class EmbeddingEngine(
                 .dataAsFloatArray
         }
     }
+
+    // Same as encodeImageFromUri, for a frame already decoded in memory (a
+    // paused video frame) - goes through the exact same preprocessing and
+    // model call, so its embedding is directly comparable to every stored
+    // one. The caller keeps ownership of the bitmap (not recycled here).
+    fun encodeBitmap(bitmap: android.graphics.Bitmap): FloatArray {
+        ensureModelsLoaded()
+
+        val tensor = ImagePreprocessor.bitmapToTensor(bitmap)
+
+        return synchronized(visionLock) {
+            visionModule!!
+                .forward(IValue.from(tensor))
+                .toTensor()
+                .dataAsFloatArray
+        }
+    }
+
     fun searchByText(
         textEmbedding: FloatArray,
-        topK: Int = 20
+        topK: Int = 20,
+        contentFilter: String = "both"
     ): List<SearchResult> {
         if (topK <= 0) return emptyList()
 
         val bestPerKey = mutableMapOf<String, SearchResult>()
 
         for (record in store.readAll()) {
+            if (!matchesContentFilter(record, contentFilter)) continue
+
             val score = EmbeddingMath.dot(textEmbedding, record.embedding)
 
             val result = SearchResult(
@@ -752,13 +873,16 @@ class EmbeddingEngine(
 
     fun searchByImageEmbedding(
         imageEmbedding: FloatArray,
-        topK: Int = 20
+        topK: Int = 20,
+        contentFilter: String = "both"
     ): List<SearchResult> {
         if (topK <= 0) return emptyList()
 
         val bestPerKey = mutableMapOf<String, SearchResult>()
 
         for (record in store.readAll()) {
+            if (!matchesContentFilter(record, contentFilter)) continue
+
             val score = EmbeddingMath.dot(imageEmbedding, record.embedding)
 
             val result = SearchResult(
@@ -781,11 +905,119 @@ class EmbeddingEngine(
             .take(topK)
     }
 
+    // A record with a non-null videoUri is a video frame, null means a
+    // photo - the same distinction embedImages already uses to tell them
+    // apart (see RecentEmbeddedItem construction). Any unrecognized filter
+    // string behaves as "both", same as an absent one.
+    // ---- Collections -------------------------------------------------------
+    //
+    // A collection's members aren't "the top K" - CLIP returns *something* for
+    // any query, and raw similarity isn't comparable across queries ("dog"
+    // and "handwritten note" live in completely different score ranges). So
+    // membership is a per-query z-score: how far above that query's own
+    // average score, across the whole library, an item sits. Self-calibrating
+    // - no hand-tuned absolute thresholds - and cheap, since mean/sigma come
+    // from the same pass as the scoring.
+
+    data class CollectionSpec(
+        val id: String,
+        val embedding: FloatArray,
+        val contentMode: String,
+        // Standard deviations above the library-wide mean an item must reach.
+        val k: Double
+    )
+
+    data class CollectionScore(
+        val id: String,
+        val count: Int,
+        val covers: List<SearchResult>
+    )
+
+    // Every member of one collection, best match first. Video frames are
+    // collapsed to the video's best frame, same as search.
+    private fun collectionMembers(
+        records: List<EmbeddingRecord>,
+        spec: CollectionSpec
+    ): List<SearchResult> {
+        val scores = FloatArray(records.size)
+        var n = 0
+        var sum = 0.0
+        var sumSq = 0.0
+
+        for ((i, record) in records.withIndex()) {
+            // A record of a different size (an index from another model) can't
+            // be compared - skip it rather than let one bad record crash the
+            // whole scoring pass.
+            if (!matchesContentFilter(record, spec.contentMode) ||
+                record.embedding.size != spec.embedding.size
+            ) {
+                scores[i] = Float.NaN
+                continue
+            }
+            val score = EmbeddingMath.dot(spec.embedding, record.embedding)
+            scores[i] = score
+            n++
+            sum += score
+            sumSq += score.toDouble() * score
+        }
+
+        if (n < 2) return emptyList()
+
+        val mean = sum / n
+        val variance = (sumSq / n) - mean * mean
+        val sigma = kotlin.math.sqrt(kotlin.math.max(variance, 0.0))
+        // A flat score distribution has no outliers to call members.
+        if (sigma < 1e-6) return emptyList()
+
+        val threshold = mean + spec.k * sigma
+        val bestPerKey = mutableMapOf<String, SearchResult>()
+
+        for ((i, record) in records.withIndex()) {
+            val score = scores[i]
+            if (score.isNaN() || score < threshold) continue
+
+            val key = record.videoUri ?: record.imagePath
+            val existing = bestPerKey[key]
+            if (existing == null || score > existing.score) {
+                bestPerKey[key] = SearchResult(
+                    imagePath = record.imagePath,
+                    score = score,
+                    videoUri = record.videoUri,
+                    timestampMs = record.timestampMs
+                )
+            }
+        }
+
+        return bestPerKey.values.sortedByDescending { it.score }
+    }
+
+    // Count + a few cover items for each collection, in one read of the store.
+    fun scoreCollections(specs: List<CollectionSpec>): List<CollectionScore> {
+        val records = store.readAll()
+        return specs.map { spec ->
+            val members = collectionMembers(records, spec)
+            CollectionScore(spec.id, members.size, members.take(6))
+        }
+    }
+
+    fun collectionMembers(spec: CollectionSpec, limit: Int): List<SearchResult> {
+        return collectionMembers(store.readAll(), spec).take(limit)
+    }
+
+    private fun matchesContentFilter(record: EmbeddingRecord, contentFilter: String): Boolean {
+        return when (contentFilter) {
+            "images" -> record.videoUri == null
+            "videos" -> record.videoUri != null
+            else -> true
+        }
+    }
+
     private fun emitProgressIfNeeded(
         total: Int,
         processed: Int,
         embedded: Int,
         skipped: Int,
+        failed: Int,
         path: String,
         onProgress: (ScanProgress) -> Unit
     ) {
@@ -800,6 +1032,7 @@ class EmbeddingEngine(
                     elapsedMs = now - startTimeMs,
                     done      = false,
                     path      = path,
+                    failed    = failed,
                     recentItems = recentItems.toList()
                 )
             )
@@ -831,6 +1064,75 @@ class EmbeddingEngine(
     fun getStoredCount(): Int = store.readAll().size
 
     fun getStoredCountForFolder(folderId: String): Int = store.countForFolder(folderId)
+
+    // Looks up one specific stored item's embedding by the same identity
+    // a search result already carries - imagePath for a photo, or
+    // videoUri+timestampMs for the specific frame a video's result
+    // represents (search collapses a video's several frames to its best-
+    // scoring one - see searchByText's dedupKey). Null if it's since been
+    // deleted/re-embedded and no longer matches.
+    fun findEmbedding(imagePath: String, videoUri: String?, timestampMs: Long): FloatArray? {
+        val records = store.readAll()
+        return if (videoUri != null) {
+            records.firstOrNull { it.videoUri == videoUri && it.timestampMs == timestampMs }?.embedding
+        } else {
+            records.firstOrNull { it.videoUri == null && it.imagePath == imagePath }?.embedding
+        }
+    }
+
+    // Approximates "why this matched": scores each candidate query word's
+    // own text embedding against one specific item's stored embedding, so
+    // the caller can show which of the query's words individually pulled
+    // the most weight for this result. Not a true per-pixel/region
+    // explanation - CLIP doesn't offer that - just a per-concept one,
+    // which is what's honestly available here.
+    fun scoreWordsAgainstItem(
+        itemEmbedding: FloatArray,
+        words: List<Pair<String, IntArray>>
+    ): List<Pair<String, Float>> {
+        return words.mapNotNull { (word, tokens) ->
+            try {
+                val wordEmbedding = encodeText(tokens)
+                word to EmbeddingMath.dot(wordEmbedding, itemEmbedding)
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    // Everything the Library tab's stats need, in one pass over the store
+    // instead of separate calls that would each re-read it - readAll()
+    // isn't free for a large library, so this matters once the caller
+    // starts asking for it on a timer during an active scan (see
+    // NativeController's live stats refresh).
+    data class LibraryStats(
+        val totalEmbeddings: Int,
+        val images: Int,
+        val videos: Int,
+        val sizeBytes: Long
+    )
+
+    fun getLibraryStats(): LibraryStats {
+        val records = store.readAll()
+
+        // Distinct media items, not raw embedding rows - a video's several
+        // frame records (see embedVideoFile) all share its videoUri, so
+        // it's one video no matter how many frames it embedded as. Images
+        // have no videoUri, so imagePath alone identifies them.
+        val images = mutableSetOf<String>()
+        val videos = mutableSetOf<String>()
+        for (record in records) {
+            val videoUri = record.videoUri
+            if (videoUri != null) videos.add(videoUri) else images.add(record.imagePath)
+        }
+
+        return LibraryStats(
+            totalEmbeddings = records.size,
+            images = images.size,
+            videos = videos.size,
+            sizeBytes = store.sizeBytes()
+        )
+    }
 
     fun clearAll() = store.clear()
 }

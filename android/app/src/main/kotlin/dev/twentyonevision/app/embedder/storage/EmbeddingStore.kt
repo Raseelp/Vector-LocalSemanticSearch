@@ -202,6 +202,10 @@ class EmbeddingStore(private val context: Context) {
     fun countForFolder(folderId: String): Int =
         readAll().count { it.folderId == folderId }
 
+    // A plain stat() call, not a read of the file's contents - cheap
+    // enough to call as often as the library stats need it.
+    fun sizeBytes(): Long = try { storeFile.length() } catch (e: Exception) { 0L }
+
     // Writes to a temp file and renames over the original so a crash
     // mid-write can't leave embeddings.bin half-written.
     fun deleteByFolderId(folderId: String) {

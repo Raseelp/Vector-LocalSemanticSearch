@@ -3,131 +3,265 @@ package dev.twentyonevision.app.embedder
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.Service
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.os.Build
-import android.os.IBinder
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.ContextCompat
+import dev.twentyonevision.app.MainActivity
+import io.flutter.plugin.common.EventChannel
+import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
-// Doesn't do any scanning itself - EmbeddingEngine/MainActivity's own
-// executor thread still does that (see MainActivity's "scanImagesAndOrVideos"
-// handler). This service exists purely so the OS (and battery-happy OEM
-// task killers) see an active foreground service with an ongoing
-// notification and think twice before killing the whole process while a
-// scan that can run for an hour+ is in progress. A safety net, not the
-// main way we keep people around - that's the concurrent search and the
-// "recently indexed" strip.
-class ScanForegroundService : Service() {
+// Process-wide hub for everything about a scan that isn't the actual
+// embedding work: the notification, the latest progress tick (for both
+// the notification and a freshly (re)created Dart layer to resync from -
+// see activeProgress()), the Dart-facing progress EventChannel sink, and
+// the wake lock that keeps the CPU awake during the scan.
+//
+// No longer an Android Service - the foreground-service lifecycle itself
+// now belongs to WorkManager (see ScanWorker, which calls setForeground()
+// and drives onScanStarting/updateProgress/onScanEnded below). This keeps
+// every one of the pieces that don't actually need a Service instance:
+// they were already process-wide/static before, for the same underlying
+// reason WorkManager solves more thoroughly now - a scan can outlive
+// whatever component started it (an Activity recreated by Recents, or
+// previously a Service instance recreated the same way).
+object ScanForegroundService {
 
-    companion object {
-        private const val TAG = "ScanForegroundService"
-        private const val CHANNEL_ID = "scan_progress"
-        private const val NOTIFICATION_ID = 4201
+    private const val TAG = "ScanForegroundService"
+    const val CHANNEL_ID = "scan_progress"
+    const val NOTIFICATION_ID = 4201
 
-        @Volatile
-        private var instance: ScanForegroundService? = null
+    // Safety-net ceiling for the wake lock, renewed on every progress tick
+    // (updateProgress) - a stalled/orphaned scan can't hold it forever,
+    // but a genuinely long one never actually hits this since ticks keep
+    // pushing it back out.
+    private const val WAKE_LOCK_TIMEOUT_MS = 3 * 60 * 60 * 1000L // 3 hours
 
-        fun start(context: Context) {
-            val intent = Intent(context, ScanForegroundService::class.java)
-            try {
-                ContextCompat.startForegroundService(context, intent)
-            } catch (e: Exception) {
-                // Background-start restrictions, a killed process racing
-                // this call, etc. The scan runs regardless of this service -
-                // losing the notification/keep-alive isn't worth crashing over.
-                Log.w(TAG, "start: could not start foreground service: ${e.message}")
-            }
-        }
+    // The notification's second line - fixed, not rotating. Also true:
+    // it's all on-device, nothing leaves the phone.
+    private const val REASSURING_PHRASE =
+        "Indexing your photos on-device — private, offline, and ready for instant search."
 
-        fun stop(context: Context) {
-            val running = instance
-            if (running != null) {
-                // The int-flag overload (STOP_FOREGROUND_REMOVE) needs API 24 -
-                // minSdk here is 21, so use the boolean one instead. Deprecated,
-                // still fully functional on every version we ship to.
-                @Suppress("DEPRECATION")
-                running.stopForeground(true)
-                running.stopSelf()
-            } else {
-                // Not running (already stopped, or start() failed) - stopService
-                // on a not-running service is a harmless no-op.
-                context.stopService(Intent(context, ScanForegroundService::class.java))
-            }
-        }
+    private data class Snapshot(
+        val processed: Int,
+        val total: Int,
+        val embedded: Int,
+        val elapsedMs: Long
+    )
 
-        // Best-effort, called on every progress tick - never throws, never
-        // blocks the scan if the service isn't up (yet, or anymore).
-        fun updateProgress(processed: Int, total: Int, embedded: Int) {
-            instance?.postProgress(processed, total, embedded)
-        }
+    @Volatile
+    private var lastSnapshot: Snapshot? = null
+    @Volatile
+    private var previousSnapshot: Snapshot? = null
+
+    // The Dart-facing progress EventChannel's sink, and the full raw
+    // payload last sent through it. Removing the app from Recents doesn't
+    // kill this process (that's the whole point of the foreground work),
+    // but it does recreate the Activity/Flutter engine - the scan itself
+    // keeps running on its original ScanWorker coroutine. Routing through
+    // a static sink means that orphaned scan's ticks still reach whichever
+    // MainActivity/engine is current when they fire, and a freshly
+    // (re)created Dart layer can ask activeProgress() for the last one it
+    // missed instead of showing "nothing is scanning".
+    @Volatile
+    private var progressSink: EventChannel.EventSink? = null
+    @Volatile
+    private var lastProgressMap: Map<String, Any?>? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // A foreground service/Worker only keeps this process from being
+    // killed - it does *not* keep the CPU awake. Once the screen turns
+    // off, Android lets the CPU suspend unless something holds a wake
+    // lock, which would freeze the scan mid-work even though it's still
+    // technically "running" in the foreground. Same PARTIAL_WAKE_LOCK
+    // pattern music/download/backup apps use to keep working with the
+    // screen off. Bounded with a timeout (renewed on every progress tick)
+    // rather than acquired indefinitely, so a missed release() can't leak
+    // it and drain the battery forever.
+    @Volatile
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    fun setProgressSink(sink: EventChannel.EventSink?) {
+        progressSink = sink
     }
 
-    override fun onCreate() {
-        super.onCreate()
-        instance = this
-        createChannelIfNeeded()
+    fun pushProgress(map: Map<String, Any?>) {
+        lastProgressMap = map
+        mainHandler.post { progressSink?.success(map) }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    // What a freshly (re)created Dart layer asks for on init to resync
+    // with a scan that's still running from before it existed. Null once
+    // onScanEnded() has run - see there.
+    fun activeProgress(): Map<String, Any?>? = lastProgressMap
+
+    // Called once, right as a scan begins (from ScanWorker.doWork(),
+    // before the embedding loop starts) - clears anything left over from
+    // a previous run so it can't leak into this one's first notification,
+    // and acquires the wake lock.
+    fun onScanStarting(context: Context) {
+        lastSnapshot = null
+        previousSnapshot = null
+        lastProgressMap = null
+        createChannelIfNeeded(context)
+        acquireWakeLock(context)
+    }
+
+    // Called once the scan loop returns, however it ended (finished,
+    // cancelled, or threw) - always releases the wake lock and clears the
+    // cache, so activeProgress() correctly reports "nothing running" and
+    // the next scan's first notification doesn't inherit stale numbers.
+    fun onScanEnded() {
+        releaseWakeLock()
+        lastSnapshot = null
+        previousSnapshot = null
+        lastProgressMap = null
+    }
+
+    // The notification to pass to setForeground() right as a scan starts -
+    // reads whatever's already cached (a restart mid-scan may have ticks
+    // from before this call) instead of always showing a bare "Preparing...".
+    fun initialNotification(context: Context): Notification {
+        return buildNotification(context, lastSnapshot ?: Snapshot(0, 0, 0, 0))
+    }
+
+    // Called on every progress tick - never throws, never blocks the scan.
+    // Returns the notification to show for it; the caller is responsible
+    // for actually posting it (ScanWorker, via NotificationManagerCompat),
+    // since only it knows whether it's already past the initial
+    // setForeground() call.
+    fun updateProgress(
+        context: Context,
+        processed: Int,
+        total: Int,
+        embedded: Int,
+        elapsedMs: Long
+    ): Notification {
+        previousSnapshot = lastSnapshot
+        val snapshot = Snapshot(processed, total, embedded, elapsedMs)
+        lastSnapshot = snapshot
+        // Extends the wake lock's timeout rather than letting a long scan
+        // outlast it - see the field's doc.
+        acquireWakeLock(context)
+        return buildNotification(context, snapshot)
+    }
+
+    private fun acquireWakeLock(context: Context) {
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    buildNotification(0, 0, 0),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, buildNotification(0, 0, 0))
-            }
+            val pm = context.applicationContext
+                .getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+            val lock = wakeLock ?: pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "$TAG:scan"
+            ).apply { setReferenceCounted(false) }
+            lock.acquire(WAKE_LOCK_TIMEOUT_MS)
+            wakeLock = lock
         } catch (e: Exception) {
-            Log.w(TAG, "onStartCommand: startForeground failed, stepping down: ${e.message}")
-            stopSelf()
+            Log.w(TAG, "acquireWakeLock: failed: ${e.message}")
         }
-        // Nothing meaningful to restart from a null intent - the scan itself
-        // lives outside this service, so a system-triggered restart would
-        // just show a notification for a scan that no longer exists.
-        return START_NOT_STICKY
     }
 
-    private fun postProgress(processed: Int, total: Int, embedded: Int) {
+    private fun releaseWakeLock() {
         try {
-            NotificationManagerCompat.from(this)
-                .notify(NOTIFICATION_ID, buildNotification(processed, total, embedded))
+            wakeLock?.let { if (it.isHeld) it.release() }
         } catch (e: Exception) {
-            // Most likely a revoked POST_NOTIFICATIONS permission - the
-            // notification just won't be visible, which is fine.
+            // Nothing to do - worst case it releases itself at its timeout.
         }
+        wakeLock = null
     }
 
-    private fun buildNotification(processed: Int, total: Int, embedded: Int): Notification {
+    private fun buildNotification(context: Context, snapshot: Snapshot): Notification {
+        val (processed, total) = snapshot
         val percent = if (total > 0) (processed * 100 / total) else 0
-        val text = if (total > 0) {
-            "$percent% done - $embedded indexed so far"
+
+        // The title is always what's on screen, collapsed or not - the
+        // concrete numbers go there so they never depend on the user
+        // expanding the notification. The second line is nice to have,
+        // not load-bearing, so it's fine if an OEM shade only shows it
+        // on expand.
+        val title = if (total <= 0) {
+            "Preparing to index..."
         } else {
-            "Preparing..."
+            val parts = mutableListOf("$percent%", "$processed/$total")
+            speedLabel(snapshot)?.let { parts.add(it) }
+            etaLabel(snapshot)?.let { parts.add("$it left") }
+            parts.joinToString("  •  ")
         }
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Indexing your media")
-            .setContentText(text)
+        return NotificationCompat.Builder(context.applicationContext, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(REASSURING_PHRASE)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(REASSURING_PHRASE))
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setColor(Color.parseColor("#165E59"))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setProgress(100, percent, total <= 0)
+            .setContentIntent(contentIntent(context))
             .build()
     }
 
-    private fun createChannelIfNeeded() {
+    // Tapping the notification brings the app to the front instead of
+    // doing nothing.
+    private fun contentIntent(context: Context): PendingIntent {
+        val intent = Intent(context.applicationContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        return PendingIntent.getActivity(context.applicationContext, 0, intent, flags)
+    }
+
+    // Recent/instantaneous rate, from the last two ticks - mirrors the
+    // in-app bar's recentEmbeddingsPerSecond.
+    private fun speedLabel(snapshot: Snapshot): String? {
+        val prev = previousSnapshot ?: return null
+        val msDelta = snapshot.elapsedMs - prev.elapsedMs
+        if (msDelta <= 200) return null
+        val perSecond = (snapshot.embedded - prev.embedded) / (msDelta / 1000.0)
+        if (perSecond <= 0) return null
+        return if (perSecond >= 1) {
+            "%.1f/sec".format(perSecond)
+        } else {
+            "${(1000 / perSecond).roundToInt()}ms/item"
+        }
+    }
+
+    // Whole-scan average, same formula as the in-app bar's scanEtaText -
+    // steadier than the instantaneous rate for an ETA.
+    private fun etaLabel(snapshot: Snapshot): String? {
+        val (processed, total, _, elapsedMs) = snapshot
+        if (total <= 0 || processed <= 0 || processed >= total) return null
+        val msPerItem = elapsedMs.toDouble() / processed
+        val remainingMs = (msPerItem * (total - processed)).roundToLong()
+        return formatDuration(remainingMs)
+    }
+
+    private fun formatDuration(ms: Long): String {
+        if (ms <= 0) return "0s"
+        val totalSeconds = ms / 1000
+        val h = totalSeconds / 3600
+        val m = (totalSeconds % 3600) / 60
+        val s = totalSeconds % 60
+        return when {
+            h > 0 -> "${h}h ${m}m"
+            m > 0 -> "${m}m ${s}s"
+            else -> "${s}s"
+        }
+    }
+
+    private fun createChannelIfNeeded(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val manager = getSystemService(NotificationManager::class.java) ?: return
+        val manager = context.applicationContext
+            .getSystemService(NotificationManager::class.java) ?: return
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return
 
         val channel = NotificationChannel(
@@ -140,22 +274,4 @@ class ScanForegroundService : Service() {
         }
         manager.createNotificationChannel(channel)
     }
-
-    // API 34+: the system telling us this service's foreground-service time
-    // budget for its type is up. The scan keeps running either way (it
-    // doesn't live in this service) - we just lose the keep-alive
-    // protection and the notification, which beats crashing.
-    override fun onTimeout(startId: Int, fgsType: Int) {
-        Log.w(TAG, "onTimeout: foreground service time limit reached, stepping down")
-        @Suppress("DEPRECATION")
-        stopForeground(true)
-        stopSelf()
-    }
-
-    override fun onDestroy() {
-        instance = null
-        super.onDestroy()
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
 }

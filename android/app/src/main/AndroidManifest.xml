@@ -1,7 +1,21 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <!-- Only for pre-Android-13 devices, where READ_MEDIA_* above didn't
+         exist yet - capped with maxSdkVersion so Play doesn't see this as
+         requesting broad legacy storage access on modern API levels where
+         the scoped permissions already cover it. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"/>
+    <!-- "Save a copy" (the full-screen viewer's actions sheet) writes to
+         MediaStore, which needs this on pre-scoped-storage devices only -
+         same maxSdkVersion pattern as READ_EXTERNAL_STORAGE above. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28"/>
+    <!-- "Set as wallpaper" in the same actions sheet - a normal permission,
+         no runtime prompt. -->
+    <uses-permission android:name="android.permission.SET_WALLPAPER"/>
     <!-- Needed in every build type (not just debug) so ModelManager can
          download the CLIP weights on first run. -->
     <uses-permission android:name="android.permission.INTERNET"/>
@@ -9,10 +23,25 @@
 
     <!-- Keeps a scan alive in the background: a visible notification while
          indexing runs, so the OS (and battery-happy OEM task killers) don't
-         treat the app as idle and kill it mid-scan. -->
+         treat the app as idle and kill it mid-scan. specialUse, not
+         mediaProcessing - mediaProcessing is the type this app's actual
+         function matches on paper, but on this device (and presumably the
+         same Android 15 build/OEM combo for other users) the OS itself
+         rejects it at the moment a foreground service actually tries to
+         start with that type: android.app.InvalidForegroundServiceTypeException
+         ("Starting FGS with type unknown ... has been prohibited"), which
+         WorkManager's own SystemForegroundService doesn't catch, so it
+         crashes the whole process. specialUse doesn't hit that same
+         rejection and is what this app used successfully before this
+         WorkManager migration - see PROPERTY_SPECIAL_USE_FGS_SUBTYPE below
+         for the justification Play review will want. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <!-- Keeps the CPU from suspending mid-scan once the screen turns off -
+         a foreground service alone only keeps the process alive, not the
+         CPU awake. See ScanForegroundService's wake lock. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
 
     <application
@@ -46,12 +75,21 @@
             android:name=".SafPickerActivity"
             android:exported="false" />
 
-        <!-- Keep-alive notification while a scan is running - see
-             ScanForegroundService for why this exists. -->
+        <!-- The scan itself now runs as WorkManager work (see ScanWorker),
+             not a Service this app declares directly - WorkManager starts
+             its own internal foreground service for that. This just tells
+             it which type to use, merged with WorkManager's own manifest
+             entry for the same service. ScanForegroundService is now a
+             plain singleton (notification/progress/wake-lock), not a
+             Service - see its doc. -->
         <service
-            android:name=".embedder.ScanForegroundService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProcessing" />
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="specialUse"
+            tools:node="merge">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="On-device photo/video indexing: generates CLIP embeddings from the folders the user picked, so search stays available even while the app is backgrounded." />
+        </service>
 
         <!-- Flutter embedding metadata -->
         <meta-data

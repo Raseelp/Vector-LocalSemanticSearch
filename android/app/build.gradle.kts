@@ -28,7 +28,7 @@ android {
 
     defaultConfig {
         applicationId = "dev.twentyonevision.app"
-        minSdk = flutter.minSdkVersion
+        minSdk = 23
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -89,6 +89,7 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+    implementation("androidx.work:work-runtime-ktx:2.11.2")
 
     // Needed for R8 to resolve SoLoader's annotations
     compileOnly("javax.annotation:javax.annotation-api:1.3.2")

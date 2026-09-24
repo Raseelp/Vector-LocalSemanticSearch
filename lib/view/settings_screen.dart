@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:twentyonevision/controllers/collections_controller.dart';
 import 'package:twentyonevision/controllers/native_controller.dart';
 import 'package:twentyonevision/models/model_status.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
@@ -61,11 +62,34 @@ class SettingsScreen extends StatelessWidget {
                         ],
                       ),
                       const SizedBox(height: AppSpacing.xl),
-                      const _GroupLabel('Search'),
-                      _GroupCard(children: [_ResultsSlider(controller: controller)]),
-                      const SizedBox(height: AppSpacing.xl),
                       const _GroupLabel('Permissions'),
-                      const _PermissionsCard(),
+                      _PermissionsCard(controller: controller),
+                      const SizedBox(height: AppSpacing.xl),
+                      const _GroupLabel('Collections'),
+                      GetBuilder<CollectionsController>(
+                        builder: (collections) => _GroupCard(
+                          children: [
+                            _TapRow(
+                              icon: Icons.sync_rounded,
+                              title: 'Resync collections',
+                              subtitle: collections.isScoring
+                                  ? 'Working on it...'
+                                  : 'Recompute every collection from scratch',
+                              onTap: collections.isScoring ? null : collections.resyncAll,
+                            ),
+                            _TapRow(
+                              icon: Icons.restart_alt_rounded,
+                              title: 'Restore default collections',
+                              subtitle: collections.hasCustomizedBuiltIns
+                                  ? 'Bring back deleted or hidden ones and undo edits'
+                                  : 'Nothing to restore',
+                              onTap: collections.hasCustomizedBuiltIns
+                                  ? collections.restoreDefaults
+                                  : null,
+                            ),
+                          ],
+                        ),
+                      ),
                       const SizedBox(height: AppSpacing.xl),
                       const _GroupLabel('Danger zone'),
                       _GroupCard(
@@ -230,50 +254,6 @@ class _SettingsRow extends StatelessWidget {
   }
 }
 
-class _ResultsSlider extends StatelessWidget {
-  const _ResultsSlider({required this.controller});
-
-  final NativeController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.sm),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('Results per search', style: Theme.of(context).textTheme.titleSmall),
-              Text(
-                '${controller.sliderValue.round()}',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleSmall?.copyWith(color: AppColors.primary),
-              ),
-            ],
-          ),
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              trackHeight: 4,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-              overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
-            ),
-            child: Slider(
-              value: controller.sliderValue,
-              min: 10,
-              max: 100,
-              divisions: 90,
-              onChanged: controller.setSliderValue,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _DangerRow extends StatelessWidget {
   const _DangerRow({required this.title, required this.subtitle, required this.onTap});
 
@@ -310,8 +290,22 @@ class _DangerRow extends StatelessWidget {
 // normal push now (not kept alive under an IndexedStack), so a fresh check
 // in initState is enough on its own; the lifecycle observer still catches
 // granting/revoking from system Settings while this screen is open.
+// Every permission the app ever asks for should have a row here - this is
+// meant to be the one place a user (or us, reviewing it) can see the
+// app's complete permission footprint at a glance. Whenever a new one is
+// added anywhere else in the app, add its row here too:
+//  - Photos/Videos: storage access, requested in NativeController.
+//    requestMediaPermission - required, the app can't scan without it.
+//  - Notifications: "keep this going in the background" - requested by
+//    NativeController.requestBackgroundScanPermission (see its doc),
+//    tracked in backgroundNotificationsGranted, refreshed automatically
+//    on every app resume by NativeController's own WidgetsBindingObserver -
+//    optional, scanning works without it, it just won't show a progress
+//    notification.
 class _PermissionsCard extends StatefulWidget {
-  const _PermissionsCard();
+  const _PermissionsCard({required this.controller});
+
+  final NativeController controller;
 
   @override
   State<_PermissionsCard> createState() => _PermissionsCardState();
@@ -351,35 +345,58 @@ class _PermissionsCardState extends State<_PermissionsCard> with WidgetsBindingO
 
   @override
   Widget build(BuildContext context) {
-    // Always shows the two status rows, granted or not - hiding the whole
-    // card once granted left the "Permissions" label sitting above nothing,
-    // which reads as broken rather than as good news.
-    final needsGrant = _photosGranted == false || _videosGranted == false;
+    final controller = widget.controller;
+
+    // Always shows every status row, granted or not - hiding the whole
+    // card once granted left the "Permissions" label sitting above
+    // nothing, which reads as broken rather than as good news.
+    final needsStorageGrant = _photosGranted == false || _videosGranted == false;
+    final needsNotificationGrant = !controller.backgroundNotificationsGranted;
 
     return _GroupCard(
       children: [
         _PermissionRow(label: 'Photos', granted: _photosGranted),
         _PermissionRow(label: 'Videos', granted: _videosGranted),
-        if (needsGrant)
-          InkWell(
+        if (needsStorageGrant)
+          _GrantAccessRow(
             onTap: () async {
               await [Permission.photos, Permission.videos].request();
               await _refresh();
             },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.base,
-                vertical: AppSpacing.md,
-              ),
-              child: Text(
-                'Grant access',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleSmall?.copyWith(color: AppColors.primary),
-              ),
-            ),
           ),
+        const Divider(height: 1, color: AppColors.hairline),
+        _PermissionRow(
+          label: 'Notifications',
+          granted: controller.backgroundNotificationsGranted,
+        ),
+        if (needsNotificationGrant)
+          _GrantAccessRow(onTap: controller.requestBackgroundScanPermission),
       ],
+    );
+  }
+}
+
+class _GrantAccessRow extends StatelessWidget {
+  const _GrantAccessRow({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.base,
+          vertical: AppSpacing.md,
+        ),
+        child: Text(
+          'Grant access',
+          style: Theme.of(
+            context,
+          ).textTheme.titleSmall?.copyWith(color: AppColors.primary),
+        ),
+      ),
     );
   }
 }
@@ -415,6 +432,28 @@ class _PermissionRow extends StatelessWidget {
             style: Theme.of(context).textTheme.bodySmall?.copyWith(color: color),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// A settings row that does something when tapped - dimmed and inert when
+// [onTap] is null.
+class _TapRow extends StatelessWidget {
+  const _TapRow({required this.icon, required this.title, required this.subtitle, required this.onTap});
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Opacity(
+        opacity: onTap == null ? 0.5 : 1,
+        child: _SettingsRow(icon: icon, title: title, subtitle: subtitle),
       ),
     );
   }

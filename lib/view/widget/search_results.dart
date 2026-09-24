@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -9,53 +10,85 @@ import 'package:twentyonevision/utils/app_spacing.dart';
 import 'package:twentyonevision/view/image_full_screen.dart';
 import 'package:twentyonevision/view/video_full_screen.dart';
 
-class SearchResultsGrid extends StatelessWidget {
-  const SearchResultsGrid({super.key, required this.controller});
+// Slivers, not a single boxed widget - this used to be a GridView.builder
+// with shrinkWrap:true/NeverScrollableScrollPhysics inside an outer
+// SingleChildScrollView, which is a well-known trap: a shrink-wrapped
+// grid like that loses proper lazy building/recycling (it has to size
+// itself to fit inside a non-scrolling parent), so with enough results
+// (a higher "results per search" setting, say) it ends up holding far
+// more decoded images in memory at once than are ever actually visible -
+// the direct cause of both the occasional crash and the images visibly
+// flickering out and back in while scrolling that were reported. Returned
+// as slivers so SearchTab's CustomScrollView is the one true scrollable,
+// letting the grid genuinely virtualize the way SliverGrid is meant to.
+List<Widget> searchResultsSlivers({required NativeController controller}) {
+  if (controller.isSearching) {
+    return [
+      const SliverPadding(
+        padding: EdgeInsets.symmetric(horizontal: AppSpacing.xl),
+        sliver: SliverToBoxAdapter(
+          child: _CenterNote(
+            spinner: true,
+            title: 'Searching',
+            subtitle: 'Finding the best matches on this device...',
+          ),
+        ),
+      ),
+    ];
+  }
 
-  final NativeController controller;
+  if (controller.error.isNotEmpty) {
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
+        sliver: SliverToBoxAdapter(
+          child: _CenterNote(
+            icon: Icons.error_outline_rounded,
+            title: 'Something went wrong',
+            subtitle: controller.error,
+          ),
+        ),
+      ),
+    ];
+  }
 
-  @override
-  Widget build(BuildContext context) {
-    if (controller.isSearching) {
-      return const _CenterNote(
-        spinner: true,
-        title: 'Searching',
-        subtitle: 'Finding the best matches on this device...',
-      );
-    }
+  if (controller.searchResults.isEmpty) {
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
+        sliver: SliverToBoxAdapter(
+          child: _CenterNote(
+            icon: Icons.search_rounded,
+            title: 'Search your media',
+            subtitle: controller.totalEmbeddings == 0
+                ? 'Index a folder or your phone first, then come back to search.'
+                : 'Describe a photo, place, or moment above.',
+          ),
+        ),
+      ),
+    ];
+  }
 
-    if (controller.error.isNotEmpty) {
-      return _CenterNote(
-        icon: Icons.error_outline_rounded,
-        title: 'Something went wrong',
-        subtitle: controller.error,
-      );
-    }
-
-    if (controller.searchResults.isEmpty) {
-      return _CenterNote(
-        icon: Icons.search_rounded,
-        title: 'Search your media',
-        subtitle: controller.totalEmbeddings == 0
-            ? 'Index a folder or your phone first, then come back to search.'
-            : 'Describe a photo, place, or moment above.',
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-          child: Row(
+  return [
+    SliverPadding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.xl,
+        0,
+        AppSpacing.xl,
+        AppSpacing.sm,
+      ),
+      sliver: SliverToBoxAdapter(
+        child: Builder(
+          builder: (context) => Row(
             children: [
               Padding(
                 padding: const EdgeInsets.only(left: AppSpacing.xs),
                 child: Text(
                   '${controller.searchResults.length} results',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.labelSmall?.copyWith(color: AppColors.ink48, letterSpacing: 0.5),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: AppColors.ink48,
+                    letterSpacing: 0.5,
+                  ),
                 ),
               ),
               const Spacer(),
@@ -63,16 +96,45 @@ class SearchResultsGrid extends StatelessWidget {
             ],
           ),
         ),
-        _ResultsBody(controller: controller),
-      ],
-    );
-  }
+      ),
+    ),
+    SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
+      sliver: _ResultsSliverGrid(controller: controller),
+    ),
+  ];
 }
 
-class _ResultsBody extends StatelessWidget {
-  const _ResultsBody({required this.controller});
+// A real SliverGrid, not GridView.builder(shrinkWrap: true) - see
+// searchResultsSlivers' doc for why that distinction is the actual fix
+// here. SliverChildBuilderDelegate keeps its default addAutomaticKeepAlives/
+// addRepaintBoundaries on, which is what stops an offscreen tile's decoded
+// image from being discarded and redecoded every time it scrolls back
+// into view.
+class _ResultsSliverGrid extends StatelessWidget {
+  const _ResultsSliverGrid({
+    required this.controller,
+    this.results,
+    this.bytesFor,
+    this.matchQuery,
+    this.loading = false,
+  });
 
   final NativeController controller;
+
+  // Default to the live search - a collection passes its own list, its own
+  // thumbnail cache, and the phrase to explain matches by.
+  final List<Map<String, dynamic>>? results;
+  final Uint8List? Function(Map<String, dynamic> item)? bytesFor;
+  final String? matchQuery;
+
+  // True while thumbnails are still arriving (a collection's progressive
+  // loading): a missing one then shows an animated placeholder instead of
+  // the "couldn't load" icon, which is only for one that really failed.
+  final bool loading;
+
+  List<Map<String, dynamic>> get _results =>
+      results ?? controller.searchResults;
 
   int get _crossAxisCount {
     switch (controller.resultsLayout) {
@@ -91,23 +153,31 @@ class _ResultsBody extends StatelessWidget {
   Widget build(BuildContext context) {
     final isList = controller.resultsLayout == ResultsLayout.list;
 
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
+    return SliverGrid(
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: _crossAxisCount,
         crossAxisSpacing: AppSpacing.sm,
         mainAxisSpacing: AppSpacing.sm,
         childAspectRatio: isList ? 1.7 : 0.86,
       ),
-      itemCount: controller.searchResults.length,
-      itemBuilder: (context, index) {
-        final item = controller.searchResults[index];
+      delegate: SliverChildBuilderDelegate((context, index) {
+        final item = _results[index];
         final uri = item['path'] as String;
         final isVideo = item['isVideo'] as bool? ?? false;
         final timestampMs = (item['timestampMs'] as num?)?.toInt() ?? 0;
-        final cacheKey = controller.cacheKeyForResult(item);
-        final bytes = controller.imageCache[cacheKey];
+        final bytes = bytesFor != null
+            ? bytesFor!(item)
+            : controller.imageCache[controller.cacheKeyForResult(item)];
+
+        if (bytes == null && loading) {
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+            child: _LoadingTile(
+              index: index,
+              isVideo: item['isVideo'] as bool? ?? false,
+            ),
+          );
+        }
 
         if (bytes == null) {
           return ClipRRect(
@@ -115,7 +185,10 @@ class _ResultsBody extends StatelessWidget {
             child: ColoredBox(
               color: AppColors.parchment,
               child: const Center(
-                child: Icon(Icons.image_not_supported_outlined, color: AppColors.ink48),
+                child: Icon(
+                  Icons.image_not_supported_outlined,
+                  color: AppColors.ink48,
+                ),
               ),
             ),
           );
@@ -125,6 +198,16 @@ class _ResultsBody extends StatelessWidget {
           bytes: bytes,
           isVideo: isVideo,
           onTap: () {
+            // Fire-and-forget, same as loadMetaDataByUri below - the
+            // viewer picks it up reactively once it resolves rather than
+            // navigation waiting on it.
+            controller.loadMatchExplanation(
+              path: uri,
+              isVideo: isVideo,
+              timestampMs: timestampMs,
+              query: matchQuery,
+            );
+            controller.loadMetaDataByUri(uri: uri, isVideo: isVideo);
             if (isVideo) {
               Navigator.of(context).push(
                 MaterialPageRoute(
@@ -136,18 +219,21 @@ class _ResultsBody extends StatelessWidget {
                 ),
               );
             } else {
-              controller.loadMetaDataByUri(uri: uri);
-              Get.to(() => ImageViewScreen(imageBytes: bytes));
+              Get.to(() => ImageViewScreen(imageBytes: bytes, uri: uri));
             }
           },
         );
-      },
+      }, childCount: _results.length),
     );
   }
 }
 
 class _ResultTile extends StatelessWidget {
-  const _ResultTile({required this.bytes, required this.isVideo, required this.onTap});
+  const _ResultTile({
+    required this.bytes,
+    required this.isVideo,
+    required this.onTap,
+  });
 
   final Uint8List bytes;
   final bool isVideo;
@@ -162,24 +248,65 @@ class _ResultTile extends StatelessWidget {
         onTap: onTap,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(AppRadius.lg),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Image.memory(bytes, fit: BoxFit.cover),
-              if (isVideo)
-                Positioned(
-                  right: 6,
-                  bottom: 6,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.55),
-                      borderRadius: BorderRadius.circular(AppRadius.pill),
-                    ),
-                    child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 13),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Bounds the decode to roughly this tile's actual on-screen
+              // size - without this, Image.memory decodes at the source's
+              // full resolution (native already caps that, but it's still
+              // far bigger than a grid cell) just to shrink it for
+              // display, which is the other half of what made scrolling
+              // through many results memory-hungry.
+              //
+              // Only cacheWidth is set, deliberately - passing *both*
+              // cacheWidth and cacheHeight tells Flutter to decode to
+              // exactly that box, ignoring the source photo's own aspect
+              // ratio (that's what was stretching every thumbnail,
+              // worst on list view where the tile's own aspect ratio is
+              // furthest from a typical photo's). With only one given,
+              // Flutter scales the other side to match the source's real
+              // proportions, and BoxFit.cover crops the (correctly
+              // proportioned) result to fill the tile the normal way.
+              // Sized off the longer tile edge so there's always enough
+              // resolution to cover regardless of the tile's own shape.
+              final dpr = MediaQuery.of(context).devicePixelRatio;
+              final tileEdge = constraints.maxWidth > constraints.maxHeight
+                  ? constraints.maxWidth
+                  : constraints.maxHeight;
+              final cacheWidth = tileEdge.isFinite
+                  ? (tileEdge * dpr).round()
+                  : null;
+
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  Image.memory(
+                    bytes,
+                    fit: BoxFit.cover,
+                    cacheWidth: cacheWidth,
                   ),
-                ),
-            ],
+                  if (isVideo)
+                    Positioned(
+                      right: 6,
+                      bottom: 6,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          borderRadius: BorderRadius.circular(AppRadius.pill),
+                        ),
+                        child: const Icon(
+                          Icons.play_arrow_rounded,
+                          color: Colors.white,
+                          size: 13,
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
           ),
         ),
       ),
@@ -203,7 +330,10 @@ class _LayoutPickerButton extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.pill),
         onTap: () => _showLayoutPicker(context, controller),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.sm,
+            vertical: AppSpacing.xs,
+          ),
           decoration: BoxDecoration(
             color: AppColors.canvas,
             borderRadius: BorderRadius.circular(AppRadius.pill),
@@ -212,9 +342,17 @@ class _LayoutPickerButton extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(_layoutIcon(controller.resultsLayout), size: 14, color: AppColors.ink80),
+              Icon(
+                _layoutIcon(controller.resultsLayout),
+                size: 14,
+                color: AppColors.ink80,
+              ),
               const SizedBox(width: AppSpacing.xxs),
-              const Icon(Icons.expand_more_rounded, size: 14, color: AppColors.ink48),
+              const Icon(
+                Icons.expand_more_rounded,
+                size: 14,
+                color: AppColors.ink48,
+              ),
             ],
           ),
         ),
@@ -240,7 +378,12 @@ class _LayoutSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(AppSpacing.xl, 0, AppSpacing.xl, AppSpacing.xl),
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.xl,
+          0,
+          AppSpacing.xl,
+          AppSpacing.xl,
+        ),
         child: Container(
           decoration: BoxDecoration(
             color: AppColors.canvas,
@@ -280,7 +423,11 @@ class _LayoutSheet extends StatelessWidget {
 }
 
 class _LayoutOption extends StatelessWidget {
-  const _LayoutOption({required this.layout, required this.selected, required this.onTap});
+  const _LayoutOption({
+    required this.layout,
+    required this.selected,
+    required this.onTap,
+  });
 
   final ResultsLayout layout;
   final bool selected;
@@ -291,7 +438,10 @@ class _LayoutOption extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.md),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.base,
+          vertical: AppSpacing.md,
+        ),
         child: Row(
           children: [
             Icon(
@@ -303,12 +453,17 @@ class _LayoutOption extends StatelessWidget {
             Expanded(
               child: Text(
                 _layoutLabel(layout),
-                style: Theme.of(
-                  context,
-                ).textTheme.titleSmall?.copyWith(color: selected ? AppColors.primary : AppColors.ink),
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  color: selected ? AppColors.primary : AppColors.ink,
+                ),
               ),
             ),
-            if (selected) const Icon(Icons.check_rounded, size: 18, color: AppColors.primary),
+            if (selected)
+              const Icon(
+                Icons.check_rounded,
+                size: 18,
+                color: AppColors.primary,
+              ),
           ],
         ),
       ),
@@ -343,7 +498,12 @@ String _layoutLabel(ResultsLayout layout) {
 }
 
 class _CenterNote extends StatelessWidget {
-  const _CenterNote({this.icon, this.spinner = false, required this.title, required this.subtitle});
+  const _CenterNote({
+    this.icon,
+    this.spinner = false,
+    required this.title,
+    required this.subtitle,
+  });
 
   final IconData? icon;
   final bool spinner;
@@ -360,24 +520,152 @@ class _CenterNote extends StatelessWidget {
             const SizedBox(
               width: 22,
               height: 22,
-              child: CircularProgressIndicator(strokeWidth: 2.4, color: AppColors.primary),
+              child: CircularProgressIndicator(
+                strokeWidth: 2.4,
+                color: AppColors.primary,
+              ),
             )
           else if (icon != null)
             Icon(icon, size: 32, color: AppColors.ink48),
           const SizedBox(height: AppSpacing.base),
-          Text(title, style: Theme.of(context).textTheme.titleMedium, textAlign: TextAlign.center),
+          Text(
+            title,
+            style: Theme.of(context).textTheme.titleMedium,
+            textAlign: TextAlign.center,
+          ),
           const SizedBox(height: AppSpacing.xs),
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 280),
             child: Text(
               subtitle,
               textAlign: TextAlign.center,
-              style: Theme.of(
-                context,
-              ).textTheme.bodySmall?.copyWith(color: AppColors.ink48, height: 1.4),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: AppColors.ink48,
+                height: 1.4,
+              ),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The results grid for something other than the live search (a
+/// collection): same tiles and viewers, its own list and thumbnails.
+Widget collectionResultsGrid({
+  required NativeController controller,
+  required List<Map<String, dynamic>> results,
+  required Uint8List? Function(Map<String, dynamic> item) bytesFor,
+  required String matchQuery,
+  bool loading = false,
+}) {
+  return _ResultsSliverGrid(
+    loading: loading,
+    controller: controller,
+    results: results,
+    bytesFor: bytesFor,
+    matchQuery: matchQuery,
+  );
+}
+
+// What a thumbnail that hasn't arrived yet looks like: a soft band of light
+// drifting across the tile while a small icon - one that suits the media,
+// swapping every moment - fades in and out, so a grid that's still filling
+// in feels like it's being developed rather than broken.
+class _LoadingTile extends StatefulWidget {
+  const _LoadingTile({required this.index, required this.isVideo});
+
+  final int index;
+  final bool isVideo;
+
+  @override
+  State<_LoadingTile> createState() => _LoadingTileState();
+}
+
+class _LoadingTileState extends State<_LoadingTile>
+    with SingleTickerProviderStateMixin {
+  static const _imageIcons = [
+    Icons.landscape_outlined,
+    Icons.wb_sunny_outlined,
+    Icons.local_florist_outlined,
+    Icons.pets_outlined,
+    Icons.photo_outlined,
+  ];
+  static const _videoIcons = [
+    Icons.movie_outlined,
+    Icons.play_circle_outline_rounded,
+    Icons.videocam_outlined,
+  ];
+
+  late final AnimationController _sweep = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1700),
+  );
+  Timer? _swap;
+  late int _iconIndex = widget.index;
+
+  List<IconData> get _icons => widget.isVideo ? _videoIcons : _imageIcons;
+
+  @override
+  void initState() {
+    super.initState();
+    // Neighbouring tiles start at different points so the grid doesn't
+    // pulse in lockstep.
+    _sweep.repeat();
+    _sweep.value = (widget.index * 0.137) % 1;
+    _swap = Timer.periodic(const Duration(milliseconds: 1300), (_) {
+      if (mounted) setState(() => _iconIndex++);
+    });
+  }
+
+  @override
+  void dispose() {
+    _swap?.cancel();
+    _sweep.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final icon = _icons[_iconIndex % _icons.length];
+
+    return AnimatedBuilder(
+      animation: _sweep,
+      builder: (context, child) {
+        final t = _sweep.value;
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment(-2 + 4 * t, -1),
+              end: Alignment(-1 + 4 * t, 1),
+              colors: const [
+                AppColors.parchment,
+                AppColors.pearl,
+                AppColors.parchment,
+              ],
+            ),
+          ),
+          child: child,
+        );
+      },
+      child: Center(
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 500),
+          transitionBuilder: (child, animation) => FadeTransition(
+            opacity: animation,
+            child: ScaleTransition(
+              scale: Tween(begin: 0.7, end: 1.0).animate(animation),
+              child: child,
+            ),
+          ),
+          child: Icon(
+            icon,
+            key: ValueKey(icon),
+            size: 28,
+            color: AppColors.ink48.withValues(alpha: 0.55),
+          ),
+        ),
       ),
     );
   }

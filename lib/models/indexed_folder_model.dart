@@ -31,6 +31,10 @@ class IndexedFolder {
   final int total;
   final int embedded;
   final int skipped;
+
+  /// Files that couldn't be embedded at all (see ScanProgress.failed) - live
+  /// scan progress only, never persisted (see toMap).
+  final int failed;
   final num elapsedMs;
   final String path;
   final int processed;
@@ -48,6 +52,7 @@ class IndexedFolder {
     required this.total,
     required this.embedded,
     required this.skipped,
+    this.failed = 0,
     required this.elapsedMs,
     required this.path,
     required this.processed,
@@ -62,6 +67,7 @@ class IndexedFolder {
       total: map['total'] as int? ?? 0,
       embedded: map['embedded'] as int? ?? 0,
       skipped: map['skipped'] as int? ?? 0,
+      failed: map['failed'] as int? ?? 0,
       elapsedMs: map['elapsedMs'] as num? ?? 0,
       path: map['path'] ?? '',
       processed: map['processed'] ?? 0,
@@ -109,6 +115,7 @@ class IndexedFolder {
     int? total,
     int? embedded,
     int? skipped,
+    int? failed,
     num? elapsedMs,
     String? path,
     int? processed,
@@ -121,6 +128,7 @@ class IndexedFolder {
       total: total ?? this.total,
       embedded: embedded ?? this.embedded,
       skipped: skipped ?? this.skipped,
+      failed: failed ?? this.failed,
       elapsedMs: elapsedMs ?? this.elapsedMs,
       path: path ?? this.path,
       processed: processed ?? this.processed,

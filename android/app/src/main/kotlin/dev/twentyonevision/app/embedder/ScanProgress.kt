@@ -16,5 +16,10 @@ data class ScanProgress(
     val elapsedMs: Long,
     val done: Boolean,
     val path: String,
-    val recentItems: List<RecentEmbeddedItem> = emptyList()
+    val recentItems: List<RecentEmbeddedItem> = emptyList(),
+    // The subset of skipped that wasn't "already indexed" - files that
+    // couldn't be decoded/embedded at all (corrupt, unsupported format, a
+    // video with no readable frames). They're retried on every rescan,
+    // which is why a finished library can still show a few "new" files.
+    val failed: Int = 0
 )
