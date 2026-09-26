@@ -5,7 +5,7 @@ import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/view/home_screen.dart';
 import 'package:twentyonevision/view/model_download_screen.dart';
 
-/// Shows the download screen until the CLIP models are ready, then the app.
+/// Shows the download screen until every model is on the device, then the app.
 class AppGate extends StatelessWidget {
   const AppGate({super.key});
 
@@ -24,7 +24,8 @@ class AppGate extends StatelessWidget {
           );
         }
 
-        if (!controller.modelsReady) {
+        // Both the search models and the face recognition model.
+        if (!controller.allModelsReady) {
           return const ModelDownloadScreen();
         }
 

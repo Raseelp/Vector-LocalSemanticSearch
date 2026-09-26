@@ -3,10 +3,13 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:twentyonevision/controllers/faces_controller.dart';
+import 'package:twentyonevision/controllers/native_controller.dart';
+import 'package:twentyonevision/models/model_status.dart';
 import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
+import 'package:twentyonevision/view/model_download_screen.dart';
 import 'package:twentyonevision/view/widget/confirm_dialog.dart';
 
 /// A face picture, cut from its photo on demand (see FacesController.crop).
@@ -62,9 +65,14 @@ class _FaceAvatarState extends State<FaceAvatar> {
   void _load() {
     _release();
     final id = widget.faceId;
-    _bytes = _controller.cachedCrop(id);
-    if (_bytes != null) return;
+    final cached = _controller.cachedCrop(id);
+    if (cached != null) {
+      _bytes = cached;
+      return;
+    }
 
+    // Not made yet: the picture already showing (the person's previous one) stays
+    // until this one is ready, so a change is a fade, never a blank tile.
     _holding = id;
     _controller.crop(id).then((bytes) {
       if (_holding == id) _release();
@@ -75,18 +83,31 @@ class _FaceAvatarState extends State<FaceAvatar> {
   @override
   Widget build(BuildContext context) {
     final dpr = MediaQuery.of(context).devicePixelRatio;
-    final child = _bytes == null
+    final bytes = _bytes;
+    final picture = bytes == null
         ? Container(
+            key: const ValueKey('placeholder'),
             color: AppColors.parchment,
             alignment: Alignment.center,
             child: Icon(Icons.person_rounded, size: widget.size * 0.45, color: AppColors.hairline),
           )
         : Image.memory(
-            _bytes!,
+            bytes,
+            key: ValueKey(bytes),
             fit: BoxFit.cover,
             cacheWidth: (widget.size * dpr).round(),
             gaplessPlayback: true,
           );
+    // Cross-fades when the picture is swapped (stack that fills the tile, so
+    // the pictures aren't left loose in it).
+    final child = AnimatedSwitcher(
+      duration: const Duration(milliseconds: 350),
+      layoutBuilder: (current, previous) => Stack(
+        fit: StackFit.expand,
+        children: [...previous, if (current != null) current],
+      ),
+      child: picture,
+    );
 
     return SizedBox(
       width: widget.size,
@@ -100,11 +121,23 @@ class _FaceAvatarState extends State<FaceAvatar> {
 
 /// One person in the people grid.
 class PersonTile extends StatelessWidget {
-  const PersonTile({super.key, required this.person, required this.onTap, this.onLongPress});
+  const PersonTile({
+    super.key,
+    required this.person,
+    required this.onTap,
+    this.onLongPress,
+    this.selecting = false,
+    this.selected = false,
+  });
 
   final Person person;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
+
+  // While picking several people: every tile shows a tick circle; ticked ones
+  // get a ring around the face.
+  final bool selecting;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -120,10 +153,61 @@ class PersonTile extends StatelessWidget {
         child: Column(
           children: [
             LayoutBuilder(
-              builder: (context, box) => FaceAvatar(
-                faceId: person.coverFaceId,
-                size: (box.maxWidth - AppSpacing.md).clamp(64.0, 120.0),
-              ),
+              builder: (context, box) {
+                // Room for the selection ring (4 either side) inside the tile: the picture
+                // plus ring must leave space for the name and count under it.
+                final size = (box.maxWidth - 24).clamp(60.0, 112.0);
+                return SizedBox(
+                  width: size + 8,
+                  height: size + 8,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 160),
+                        width: size + 8,
+                        height: size + 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: selected ? AppColors.primary : Colors.transparent,
+                            width: 3,
+                          ),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(4),
+                          child: AnimatedScale(
+                            duration: const Duration(milliseconds: 160),
+                            scale: selected ? 0.94 : 1,
+                            child: FaceAvatar(faceId: person.coverFaceId, size: size),
+                          ),
+                        ),
+                      ),
+                      if (selecting)
+                        Positioned(
+                          right: 0,
+                          top: 0,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 160),
+                            width: 24,
+                            height: 24,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: selected ? AppColors.primary : AppColors.canvas,
+                              border: Border.all(
+                                color: selected ? AppColors.primary : AppColors.hairline,
+                                width: 1.5,
+                              ),
+                            ),
+                            child: selected
+                                ? const Icon(Icons.check_rounded, size: 16, color: AppColors.onPrimary)
+                                : null,
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
             ),
             const SizedBox(height: AppSpacing.sm),
             Text(
@@ -274,32 +358,82 @@ class FaceScanCard extends StatelessWidget {
   }
 }
 
-/// Shown when no face recognition model is installed.
+/// Shown when the face recognition model isn't on the device: what it is, why
+/// it is needed, and the download - same model system as the search models.
 class NoFaceModelCard extends StatelessWidget {
-  const NoFaceModelCard({super.key, required this.modelsDir});
-
-  final String modelsDir;
+  const NoFaceModelCard({super.key});
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    return Container(
-      padding: const EdgeInsets.all(AppSpacing.base),
-      decoration: BoxDecoration(
-        color: AppColors.parchment,
-        borderRadius: BorderRadius.circular(AppRadius.lg),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Face recognition model missing', style: textTheme.titleSmall),
-          const SizedBox(height: AppSpacing.xs),
-          Text(
-            'Copy a recognition model (an .onnx file, e.g. w600k_r50.onnx) into:\n$modelsDir',
-            style: textTheme.bodySmall?.copyWith(color: AppColors.ink80, height: 1.45),
+
+    return GetBuilder<NativeController>(
+      builder: (native) {
+        final size = native.faceModelBytes;
+        final downloading = native.isDownloadingModels;
+        final progress = native.downloadProgress;
+
+        return Container(
+          padding: const EdgeInsets.all(AppSpacing.base),
+          decoration: BoxDecoration(
+            color: AppColors.parchment,
+            borderRadius: BorderRadius.circular(AppRadius.lg),
           ),
-        ],
-      ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.face_retouching_natural, size: 20, color: AppColors.primary),
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(child: Text('Turn on People', style: textTheme.titleSmall)),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                'Grouping photos by who is in them needs a small face recognition model, '
+                'downloaded once${size > 0 ? ' (${ModelDownloadProgress.formatBytes(size)})' : ''}. '
+                'It runs entirely on this phone: nothing is uploaded, and it works offline afterwards.',
+                style: textTheme.bodySmall?.copyWith(color: AppColors.ink80, height: 1.45),
+              ),
+              if (native.downloadError.isNotEmpty) ...[
+                const SizedBox(height: AppSpacing.sm),
+                Text(
+                  native.downloadError,
+                  style: textTheme.bodySmall?.copyWith(color: AppColors.danger, fontWeight: FontWeight.w600),
+                ),
+              ],
+              const SizedBox(height: AppSpacing.md),
+              if (downloading) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(AppRadius.pill),
+                  child: LinearProgressIndicator(
+                    minHeight: 6,
+                    value: progress.overallTotalBytes == 0 ? null : progress.overallFraction,
+                    backgroundColor: AppColors.hairline,
+                    color: AppColors.primary,
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  progress.overallTotalBytes == 0
+                      ? 'Starting...'
+                      : '${ModelDownloadProgress.formatBytes(progress.overallBytesDownloaded)} '
+                          'of ${ModelDownloadProgress.formatBytes(progress.overallTotalBytes)}',
+                  style: textTheme.bodySmall?.copyWith(color: AppColors.ink48),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                PillButton(label: 'Cancel', onTap: native.cancelModelDownload, outlined: true),
+              ] else
+                PillButton(
+                  label: native.downloadError.isEmpty ? 'Download' : 'Retry download',
+                  icon: native.downloadError.isEmpty ? Icons.download_rounded : Icons.refresh_rounded,
+                  onTap: () => native.startModelDownload(onlyFaces: true),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

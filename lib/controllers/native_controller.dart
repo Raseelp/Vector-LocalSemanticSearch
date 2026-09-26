@@ -288,7 +288,12 @@ class NativeController extends GetxController with WidgetsBindingObserver {
 
   List<IndexedFolder> allIndexedFoldersList = [];
 
+  // Search (CLIP) models ready.
   bool modelsReady = false;
+
+  // Everything needed to use the app is ready: the search models AND the face
+  // recognition model. The setup screen shows until this is true.
+  bool allModelsReady = false;
   bool isCheckingModels = true;
   List<ModelStatus> modelStatuses = [];
   bool isDownloadingModels = false;
@@ -296,35 +301,110 @@ class NativeController extends GetxController with WidgetsBindingObserver {
   String downloadError = '';
   StreamSubscription<ModelDownloadProgress>? _downloadSub;
 
+  // Download speed, in bytes per second over the last few seconds (smoothed);
+  // null until there is a reading.
+  double? downloadBytesPerSecond;
+  DateTime? _speedAt;
+  int _speedBytes = 0;
+
+  /// Time left at the current speed, or null while unknown.
+  Duration? get downloadEta {
+    final rate = downloadBytesPerSecond;
+    final progress = downloadProgress;
+    if (rate == null || rate <= 0 || progress.overallTotalBytes == 0) return null;
+    final left = progress.overallTotalBytes - progress.overallBytesDownloaded;
+    if (left <= 0) return null;
+    return Duration(seconds: (left / rate).round());
+  }
+
+  void _updateDownloadSpeed(ModelDownloadProgress progress) {
+    final now = DateTime.now();
+    final at = _speedAt;
+    if (at == null || progress.overallBytesDownloaded < _speedBytes) {
+      _speedAt = now;
+      _speedBytes = progress.overallBytesDownloaded;
+      return;
+    }
+    final seconds = now.difference(at).inMilliseconds / 1000.0;
+    if (seconds < 1.0) return;
+    final instant = (progress.overallBytesDownloaded - _speedBytes) / seconds;
+    downloadBytesPerSecond = downloadBytesPerSecond == null
+        ? instant
+        : downloadBytesPerSecond! * 0.6 + instant * 0.4;
+    _speedAt = now;
+    _speedBytes = progress.overallBytesDownloaded;
+  }
+
+  List<ModelStatus> get _searchModels => modelStatuses.where((m) => m.group == 'search').toList();
+  List<ModelStatus> get _faceModels => modelStatuses.where((m) => m.group == 'faces').toList();
+
+  /// Size of the search (CLIP) models together.
+  int get searchModelBytes => _searchModels.fold<int>(0, (sum, m) => sum + m.sizeBytes);
+
+  /// Size of the face recognition model.
+  int get faceModelBytes => _faceModels.fold<int>(0, (sum, m) => sum + m.sizeBytes);
+
+  /// True once the search models are downloaded and verified.
+  bool get searchModelsVerified => _searchModels.isNotEmpty && _searchModels.every((m) => m.verified);
+
+  /// True if the face recognition model was downloaded (not merely found on the device).
+  bool get faceModelVerified => _faceModels.isNotEmpty && _faceModels.every((m) => m.verified);
+
+  /// What the setup screen's button would download right now (whatever isn't there yet).
+  int get pendingDownloadBytes {
+    var total = 0;
+    if (!searchModelsVerified) total += searchModelBytes;
+    if (!faceModelVerified) total += faceModelBytes;
+    return total;
+  }
+
+  // Things that were computed while the models were missing (collection counts
+  // and covers) are empty and nothing else would redo them: when the search
+  // models come back - a finished download, or a check that finds them - redo
+  // them now.
+  Future<void> _modelsBecameReady() async {
+    await refreshLibraryStats();
+    _refreshCollections();
+  }
+
   Future<void> checkModelsReady() async {
+    final wasReady = modelsReady;
     try {
       modelsReady = await NativeServices().areModelsReady();
+      allModelsReady = await NativeServices().areAllModelsReady();
       modelStatuses = await NativeServices().getModelInfo();
     } finally {
       isCheckingModels = false;
       update();
     }
+    if (!wasReady && modelsReady) unawaited(_modelsBecameReady());
   }
 
-  Future<void> startModelDownload() async {
+  /// Downloads the models that aren't on the device yet: the search models,
+  /// then the face recognition model ([onlyFaces] for just the latter).
+  Future<void> startModelDownload({bool onlyFaces = false}) async {
     if (isDownloadingModels) return;
+
+    final groups = <String>[if (!onlyFaces) 'search', 'faces'];
 
     isDownloadingModels = true;
     downloadError = '';
     downloadProgress = ModelDownloadProgress.empty();
+    downloadBytesPerSecond = null;
+    _speedAt = null;
+    _speedBytes = 0;
     update();
 
     _downloadSub = NativeServices().modelDownloadProgressStream().listen((
       progress,
     ) {
       downloadProgress = progress;
+      _updateDownloadSpeed(progress);
       update();
     });
 
     try {
-      final ok = await NativeServices().downloadModels();
-      modelsReady = ok;
-      modelStatuses = await NativeServices().getModelInfo();
+      await NativeServices().downloadModels(groups: groups);
     } on PlatformException catch (e) {
       downloadError = e.message ?? e.code;
     } catch (e) {
@@ -332,18 +412,38 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     } finally {
       await _downloadSub?.cancel();
       _downloadSub = null;
+      // What is really on the device, whatever happened (cancelled, or the search
+      // models done and the face model failed): the setup screen goes by this.
+      final wasReady = modelsReady;
+      try {
+        modelsReady = await NativeServices().areModelsReady();
+        allModelsReady = await NativeServices().areAllModelsReady();
+        modelStatuses = await NativeServices().getModelInfo();
+      } catch (_) {}
       isDownloadingModels = false;
       update();
+      if (!wasReady && modelsReady) unawaited(_modelsBecameReady());
+
+      // A new face model means the face scan can start.
+      if (faceModelVerified && Get.isRegistered<FacesController>()) {
+        unawaited(Get.find<FacesController>().onFaceModelChanged());
+      }
     }
   }
+
 
   Future<void> cancelModelDownload() async {
     await NativeServices().cancelModelDownload();
   }
 
+  /// Deletes every model. The app then falls back to the setup screen (see AppGate).
   Future<void> deleteModels() async {
     await NativeServices().deleteModels();
+    downloadError = '';
     await checkModelsReady();
+    if (Get.isRegistered<FacesController>()) {
+      unawaited(Get.find<FacesController>().onFaceModelChanged());
+    }
   }
 
   // Just picks and previews - doesn't search. Mirrors typing text: nothing
@@ -493,6 +593,7 @@ class NativeController extends GetxController with WidgetsBindingObserver {
       }
     } on ModelsNotReadyError {
       modelsReady = false;
+      allModelsReady = false;
       error = 'Models are not downloaded yet.';
     } finally {
       isSearching = false;
@@ -694,6 +795,7 @@ class NativeController extends GetxController with WidgetsBindingObserver {
       );
     } on ModelsNotReadyError {
       modelsReady = false;
+      allModelsReady = false;
       error = 'Models are not downloaded yet.';
       result = null;
     }

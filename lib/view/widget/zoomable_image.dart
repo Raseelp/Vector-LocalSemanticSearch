@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
+import 'package:twentyonevision/view/widget/photo_faces_layer.dart';
 
 const double _minScale = 1.0;
 const double _maxScale = 5.0;
@@ -17,10 +19,20 @@ const double _doubleTapScale = 3.0;
 // settles, and a light haptic tick marks crossing back to 1x or hitting the
 // zoom ceiling.
 class ZoomableImage extends StatefulWidget {
-  const ZoomableImage({super.key, required this.imageBytes, required this.onSingleTap});
+  const ZoomableImage({
+    super.key,
+    required this.imageBytes,
+    required this.onSingleTap,
+    this.faces = const [],
+    this.onOpenPerson,
+  });
 
   final Uint8List imageBytes;
   final VoidCallback onSingleTap;
+
+  /// Recognised people in the photo: each can be tapped to reveal who it is.
+  final List<PhotoFace> faces;
+  final ValueChanged<Person>? onOpenPerson;
 
   @override
   State<ZoomableImage> createState() => _ZoomableImageState();
@@ -41,10 +53,19 @@ class _ZoomableImageState extends State<ZoomableImage> with SingleTickerProvider
   // jump between the two.
   Uint8List? _underlay;
 
+  // The face currently picked (ring + name chip showing), if any.
+  PhotoFace? _selectedFace;
+
   @override
   void didUpdateWidget(covariant ZoomableImage old) {
     super.didUpdateWidget(old);
     if (!identical(old.imageBytes, widget.imageBytes)) _underlay = old.imageBytes;
+
+    // The people were looked up again: keep the same face picked, now with fresh details.
+    if (!identical(old.faces, widget.faces) && _selectedFace != null) {
+      final id = _selectedFace!.faceId;
+      _selectedFace = widget.faces.where((f) => f.faceId == id).firstOrNull;
+    }
   }
 
   @override
@@ -116,7 +137,14 @@ class _ZoomableImageState extends State<ZoomableImage> with SingleTickerProvider
       children: [
         Positioned.fill(
           child: GestureDetector(
-            onTap: widget.onSingleTap,
+            // A tap on empty photo first puts away a picked face, then behaves as usual.
+            onTap: () {
+              if (_selectedFace != null) {
+                setState(() => _selectedFace = null);
+              } else {
+                widget.onSingleTap();
+              }
+            },
             onDoubleTapDown: _handleDoubleTapDown,
             // Required alongside onDoubleTapDown for Flutter to actually
             // recognize the double tap - the position comes from the
@@ -155,6 +183,16 @@ class _ZoomableImageState extends State<ZoomableImage> with SingleTickerProvider
             ),
           ),
         ),
+        if (widget.faces.isNotEmpty && widget.onOpenPerson != null)
+          Positioned.fill(
+            child: PhotoFacesLayer(
+              faces: widget.faces,
+              transform: _transformController,
+              selected: _selectedFace,
+              onSelect: (face) => setState(() => _selectedFace = face),
+              onOpen: widget.onOpenPerson!,
+            ),
+          ),
         IgnorePointer(
           child: Align(
             alignment: Alignment.bottomCenter,

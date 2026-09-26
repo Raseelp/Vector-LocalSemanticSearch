@@ -1,3 +1,4 @@
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,11 +8,13 @@ import 'package:twentyonevision/models/meta_data_model.dart';
 import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
+import 'package:twentyonevision/view/person_screen.dart';
 import 'package:twentyonevision/view/widget/draggable_metadata_sheet.dart';
 import 'package:twentyonevision/view/widget/match_strength_bars.dart';
 import 'package:twentyonevision/view/widget/media_actions_sheet.dart';
 import 'package:twentyonevision/view/widget/media_chrome_button.dart';
 import 'package:twentyonevision/view/widget/media_info_widgets.dart';
+import 'package:twentyonevision/view/widget/photo_faces_layer.dart';
 import 'package:twentyonevision/view/widget/zoomable_image.dart';
 
 class ImageViewScreen extends StatefulWidget {
@@ -34,19 +37,95 @@ class ImageViewScreen extends StatefulWidget {
   State<ImageViewScreen> createState() => _ImageViewScreenState();
 }
 
+/// Coming back from a photo or video to the results, the search box was getting its
+/// focus back and pulling the keyboard up. Nobody asked for that - drop it again.
+void _dropSearchFocus() {
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (Get.isRegistered<NativeController>()) {
+      Get.find<NativeController>().searchFocusNode.unfocus();
+    }
+  });
+}
+
 class _ImageViewScreenState extends State<ImageViewScreen> {
   late Uint8List imageBytes = widget.imageBytes;
   String get uri => widget.uri;
+
+  // The recognised people in this photo (empty until looked up, or if there are none).
+  List<PhotoFace> _faces = const [];
+
+  // True while the photo's faces are being looked for and it takes a noticeable
+  // moment (a photo the background scan hasn't reached): drives a subtle shimmer.
+  bool _looking = false;
+  String _scanMessage = 'Looking for faces';
+  Timer? _poll;
+
+  // Tells the phone which viewer is asking, so a scan queued for a viewer that has since
+  // closed (flicking through unscanned photos) can be skipped.
+  final int _token = DateTime.now().microsecondsSinceEpoch;
 
   @override
   void initState() {
     super.initState();
     if (widget.loadFullRes) _loadSharp();
+    _loadFaces();
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    NativeServices().cancelPhotoFaces(_token).catchError((_) {});
+    _dropSearchFocus();
+    super.dispose();
+  }
+
+  Future<void> _loadFaces() async {
+    // Already-scanned photos answer at once; only show the shimmer if it drags on.
+    final slow = Timer(const Duration(milliseconds: 450), () {
+      if (!mounted) return;
+      setState(() {
+        _looking = true;
+        _scanMessage = 'Looking for faces'; // not what the last scan ended on
+      });
+      // While it works, ask how far it has got and say so.
+      _poll?.cancel();
+      _poll = Timer.periodic(const Duration(milliseconds: 250), (_) async {
+        try {
+          final status = await NativeServices().photoScanStatus(uri);
+          if (mounted && _looking && status != null && status.message != _scanMessage) {
+            setState(() => _scanMessage = status.message);
+          }
+        } catch (_) {}
+      });
+    });
+    try {
+      final found = await NativeServices().photoFaces(uri, token: _token);
+      if (mounted && (found.isNotEmpty || _faces.isNotEmpty)) {
+        setState(() => _faces = found);
+      }
+    } catch (_) {
+      // No faces to tap - the photo is still fully usable.
+    } finally {
+      slow.cancel();
+      _poll?.cancel();
+      if (mounted && _looking) setState(() => _looking = false);
+    }
+  }
+
+  Future<void> _openPerson(Person person) async {
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => PersonScreen(person: person)));
+    // Back from their page: they may have been renamed, merged or hidden there.
+    if (mounted) _loadFaces();
   }
 
   Future<void> _loadSharp() async {
     try {
-      final sharp = await NativeServices().loadImageBytes(uri: uri, isCompressed: true);
+      final sharp = await NativeServices().loadImageBytes(
+        uri: uri,
+        isCompressed: true,
+      );
       if (mounted) setState(() => imageBytes = sharp);
     } catch (_) {
       // Keep showing the thumbnail - blurry beats blank.
@@ -59,104 +138,129 @@ class _ImageViewScreenState extends State<ImageViewScreen> {
       builder: (controller) {
         return AnnotatedRegion<SystemUiOverlayStyle>(
           value: kMediaOverlayStyle,
-          child: Scaffold(
-          backgroundColor: Colors.black,
-          body: Stack(
-            children: [
-              AnimatedPositioned(
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeInOut,
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: controller.showMetadata
-                    ? MediaQuery.of(context).size.height * 0.5
-                    : 0,
-                child: ZoomableImage(
-                  imageBytes: imageBytes,
-                  onSingleTap: controller.hideMetadata,
-                ),
-              ),
+          // Leaving: make sure the search box doesn't get its focus (and keyboard) back.
+          child: PopScope(
+            onPopInvokedWithResult: (_, __) {
+              if (Get.isRegistered<NativeController>()) {
+                Get.find<NativeController>().searchFocusNode.unfocus();
+              }
+            },
+            child: Scaffold(
+              backgroundColor: Colors.black,
+              body: Stack(
+                children: [
+                  AnimatedPositioned(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeInOut,
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: controller.showMetadata
+                        ? MediaQuery.of(context).size.height * 0.5
+                        : 0,
+                    child: ZoomableImage(
+                      imageBytes: imageBytes,
+                      onSingleTap: controller.hideMetadata,
+                      faces: _faces,
+                      onOpenPerson: _openPerson,
+                    ),
+                  ),
 
-              // A soft scrim behind the top chrome, not just translucent
-              // buttons on their own - keeps the icons legible over a
-              // bright sky or a white wall, not just over typical photo
-              // midtones.
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                height: MediaQuery.of(context).padding.top + 72,
-                child: IgnorePointer(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [Colors.black.withValues(alpha: 0.45), Colors.transparent],
+                  Positioned.fill(child: PhotoScanGlow(visible: _looking, message: _scanMessage)),
+
+                  // A soft scrim behind the top chrome, not just translucent
+                  // buttons on their own - keeps the icons legible over a
+                  // bright sky or a white wall, not just over typical photo
+                  // midtones.
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: MediaQuery.of(context).padding.top + 72,
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.black.withValues(alpha: 0.45),
+                              Colors.transparent,
+                            ],
+                          ),
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ),
 
-              Positioned(
-                top: MediaQuery.of(context).padding.top + AppSpacing.sm,
-                left: AppSpacing.sm,
-                child: MediaChromeButton(icon: Icons.close, tooltip: 'Close', onTap: () => Get.back()),
-              ),
+                  Positioned(
+                    top: MediaQuery.of(context).padding.top + AppSpacing.sm,
+                    left: AppSpacing.sm,
+                    child: MediaChromeButton(
+                      icon: Icons.close,
+                      tooltip: 'Close',
+                      onTap: () => Get.back(),
+                    ),
+                  ),
 
-              Positioned(
-                top: MediaQuery.of(context).padding.top + AppSpacing.sm,
-                right: AppSpacing.sm,
-                child: Row(
-                  children: [
-                    MediaChromeButton(
-                      icon: Icons.image_search_rounded,
-                      tooltip: 'Search with this image',
-                      onTap: () {
-                        // All the way back to the home screen (this may have been
-                        // opened from inside a collection, not straight from
-                        // the results), on the Search tab, then search - not
-                        // awaited, the results grid shows its own loading state.
-                        Get.until((route) => route.isFirst);
-                        controller.searchWithImage(uri: uri, bytes: imageBytes);
-                      },
+                  Positioned(
+                    top: MediaQuery.of(context).padding.top + AppSpacing.sm,
+                    right: AppSpacing.sm,
+                    child: Row(
+                      children: [
+                        MediaChromeButton(
+                          icon: Icons.image_search_rounded,
+                          tooltip: 'Search with this image',
+                          onTap: () {
+                            // All the way back to the home screen (this may have been
+                            // opened from inside a collection, not straight from
+                            // the results), on the Search tab, then search - not
+                            // awaited, the results grid shows its own loading state.
+                            Get.until((route) => route.isFirst);
+                            controller.searchWithImage(
+                              uri: uri,
+                              bytes: imageBytes,
+                            );
+                          },
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
+                        MediaChromeButton(
+                          icon: Icons.ios_share_rounded,
+                          tooltip: 'Share and save',
+                          onTap: () => showMediaActionsSheet(
+                            context,
+                            uri: uri,
+                            isVideo: false,
+                            controller: controller,
+                          ),
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
+                        MediaChromeButton(
+                          icon: controller.showMetadata
+                              ? Icons.info
+                              : Icons.info_outline,
+                          tooltip: 'Details',
+                          active: controller.showMetadata,
+                          onTap: controller.toggleMetadata,
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: AppSpacing.sm),
-                    MediaChromeButton(
-                      icon: Icons.ios_share_rounded,
-                      tooltip: 'Share and save',
-                      onTap: () => showMediaActionsSheet(
-                        context,
-                        uri: uri,
-                        isVideo: false,
-                        controller: controller,
-                      ),
-                    ),
-                    const SizedBox(width: AppSpacing.sm),
-                    MediaChromeButton(
-                      icon: controller.showMetadata ? Icons.info : Icons.info_outline,
-                      tooltip: 'Details',
-                      onTap: controller.toggleMetadata,
-                    ),
-                  ],
-                ),
-              ),
+                  ),
 
-              DraggableMetadataSheet(
-                visible: controller.showMetadata,
-                onDismissed: controller.hideMetadata,
-                heightFactor: 0.5,
-                child: _MetadataContent(
-                  metadata: controller.selectedMetadata,
-                  isLoading: controller.isFetchingMetadata,
-                  matchExplanation: controller.matchExplanation,
-                ),
+                  DraggableMetadataSheet(
+                    visible: controller.showMetadata,
+                    onDismissed: controller.hideMetadata,
+                    heightFactor: 0.5,
+                    child: _MetadataContent(
+                      metadata: controller.selectedMetadata,
+                      isLoading: controller.isFetchingMetadata,
+                      matchExplanation: controller.matchExplanation,
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
-        ),
         );
       },
     );
@@ -180,7 +284,9 @@ class _MetadataContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (isLoading) {
-      return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return const Center(
+        child: CircularProgressIndicator(color: AppColors.primary),
+      );
     }
 
     return SingleChildScrollView(
@@ -204,12 +310,16 @@ class _MetadataContent extends StatelessWidget {
               InfoRow(
                 icon: Icons.image_outlined,
                 label: 'File name',
-                value: metadata.fileName.isNotEmpty ? metadata.fileName : 'Unknown',
+                value: metadata.fileName.isNotEmpty
+                    ? metadata.fileName
+                    : 'Unknown',
               ),
               InfoRow(
                 icon: Icons.folder_outlined,
                 label: 'File path',
-                value: metadata.imagePath.isNotEmpty ? metadata.imagePath : 'Unknown',
+                value: metadata.imagePath.isNotEmpty
+                    ? metadata.imagePath
+                    : 'Unknown',
               ),
               InfoRow(
                 icon: Icons.straighten_rounded,
@@ -248,7 +358,8 @@ class _MetadataContent extends StatelessWidget {
                     label: 'Date taken',
                     value: _formatDateTime(metadata.dateTime),
                   ),
-                if (metadata.cameraMake.isNotEmpty || metadata.cameraModel.isNotEmpty)
+                if (metadata.cameraMake.isNotEmpty ||
+                    metadata.cameraModel.isNotEmpty)
                   InfoRow(
                     icon: Icons.camera_alt_outlined,
                     label: 'Camera',

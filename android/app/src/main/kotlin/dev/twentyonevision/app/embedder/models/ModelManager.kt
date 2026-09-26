@@ -31,9 +31,12 @@ class ModelManager(private val context: Context) {
         private const val FREE_SPACE_MULTIPLIER = 1.3
     }
 
-    fun localFile(model: RemoteModel): File = File(context.filesDir, model.fileName)
+    fun localFile(model: RemoteModel): File {
+        val dir = model.folder?.let { File(context.filesDir, it).also { d -> d.mkdirs() } } ?: context.filesDir
+        return File(dir, model.fileName)
+    }
 
-    private fun partFile(model: RemoteModel): File = File(context.filesDir, "${model.fileName}.part")
+    private fun partFile(model: RemoteModel): File = File(localFile(model).parentFile, "${model.fileName}.part")
 
     private fun verifiedKey(model: RemoteModel) = "verified_${model.id}_${model.sha256}"
 
@@ -58,26 +61,29 @@ class ModelManager(private val context: Context) {
         return matches
     }
 
+    // Search and indexing need only the CLIP models - the face model is optional
+    // and never holds those back.
     fun areModelsReady(): Boolean = ModelCatalog.MODELS.all { isModelVerified(it) }
 
-    fun getModelStatuses(): List<ModelStatus> = ModelCatalog.MODELS.map { m ->
+    fun getModelStatuses(): List<ModelStatus> = ModelCatalog.ALL.map { m ->
         val f = localFile(m)
         ModelStatus(
             id = m.id,
             fileName = m.fileName,
             sizeBytes = m.sizeBytes,
             downloaded = f.exists() && f.length() == m.sizeBytes,
-            verified = isModelVerified(m)
+            verified = isModelVerified(m),
+            group = m.group
         )
     }
 
-    fun bytesNeededToDownload(): Long =
-        ModelCatalog.MODELS.filterNot { isModelVerified(it) }.sumOf { it.sizeBytes }
+    fun bytesNeededToDownload(models: List<RemoteModel> = ModelCatalog.MODELS): Long =
+        models.filterNot { isModelVerified(it) }.sumOf { it.sizeBytes }
 
-    fun hasEnoughFreeSpace(): Boolean {
+    fun hasEnoughFreeSpace(models: List<RemoteModel> = ModelCatalog.MODELS): Boolean {
         val stat = StatFs(context.filesDir.path)
         val free = stat.availableBytes
-        val needed = bytesNeededToDownload()
+        val needed = bytesNeededToDownload(models)
         if (needed == 0L) return true
         return free > (needed * FREE_SPACE_MULTIPLIER).toLong()
     }
@@ -86,24 +92,42 @@ class ModelManager(private val context: Context) {
         isCancelled = true
     }
 
-    fun deleteModels() {
-        for (m in ModelCatalog.MODELS) {
+    /** Deletes the CLIP models (search and indexing stop until they are downloaded again). */
+    fun deleteModels() = delete(ModelCatalog.MODELS)
+
+    /** Deletes the face recognition model only; search is unaffected. */
+    fun deleteFaceModels() = delete(ModelCatalog.FACE_MODELS)
+
+    private fun delete(models: List<RemoteModel>) {
+        for (m in models) {
             localFile(m).delete()
             partFile(m).delete()
             prefs.edit().remove(verifiedKey(m)).apply()
+
+            // A copy of a face model placed by hand in the app's external folder
+            // (where the face pipeline also looks) would keep the app thinking the
+            // model is still there - so "delete the models" removes that too.
+            if (m.folder != null) {
+                val external = context.getExternalFilesDir(m.folder)
+                if (external != null) {
+                    File(external, m.fileName).delete()
+                    File(external, m.fileName.substringBeforeLast('.') + ".json").delete()
+                }
+            }
         }
     }
 
-    // Downloads every not-yet-verified model in order. Safe to call again
-    // after a cancel or failure - already-verified models are skipped and
-    // partial downloads resume.
-    fun downloadAll(onProgress: (ModelDownloadProgress) -> Unit) {
+    // Downloads every not-yet-verified model of [models] in order (put the ones
+    // that matter most first - a failure later on doesn't lose what is done).
+    // Safe to call again after a cancel or failure - already-verified models are
+    // skipped and partial downloads resume.
+    fun download(models: List<RemoteModel>, onProgress: (ModelDownloadProgress) -> Unit) {
         isCancelled = false
 
-        val pending = ModelCatalog.MODELS.filterNot { isModelVerified(it) }
-        val overallTotal = ModelCatalog.totalBytes
+        val pending = models.filterNot { isModelVerified(it) }
+        val overallTotal = models.sumOf { it.sizeBytes }
         var overallDoneBeforeThisModel =
-            ModelCatalog.MODELS.filter { isModelVerified(it) }.sumOf { it.sizeBytes }
+            models.filter { isModelVerified(it) }.sumOf { it.sizeBytes }
 
         for (model in pending) {
             if (isCancelled) return
@@ -198,6 +222,21 @@ class ModelManager(private val context: Context) {
         }
 
         if (isCancelled) return
+
+        // Every byte is here; what follows (size and checksum) takes a few
+        // seconds on a big file. Say so - the app shows "checking", not a bar
+        // frozen just short of the end.
+        onProgress(
+            ModelDownloadProgress(
+                modelId = model.id,
+                modelFileName = model.fileName,
+                bytesForModel = model.sizeBytes,
+                totalBytesForModel = model.sizeBytes,
+                overallBytesDownloaded = overallDoneBeforeThisModel + model.sizeBytes,
+                overallTotalBytes = overallTotal,
+                done = false
+            )
+        )
 
         if (part.length() != model.sizeBytes) {
             throw IOException(

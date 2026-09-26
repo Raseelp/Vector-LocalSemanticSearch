@@ -37,6 +37,8 @@ import dev.twentyonevision.app.embedder.faces.FaceScanWorker
 import dev.twentyonevision.app.embedder.faces.FaceServices
 import dev.twentyonevision.app.embedder.faces.FaceTuner
 import dev.twentyonevision.app.embedder.faces.FaceSettings
+import dev.twentyonevision.app.embedder.models.ModelCatalog
+import dev.twentyonevision.app.embedder.models.ModelGroup
 import dev.twentyonevision.app.embedder.models.ModelManager
 import dev.twentyonevision.app.embedder.models.ModelsNotReadyException
 
@@ -92,6 +94,12 @@ class MainActivity : FlutterActivity() {
     // Face detection has its own thread and detector (with its own ONNX
     // session), so it never waits behind - or holds up - search or a scan.
     private val faceExecutor = Executors.newSingleThreadExecutor()
+    // A photo opened in the viewer that the face scan hasn't reached yet is analysed on
+    // its own thread, so it doesn't queue behind the other face calls.
+    private val photoFacesExecutor = Executors.newSingleThreadExecutor()
+    // Viewers that were closed before their photo's turn came (one photo is scanned at a time),
+    // by the token each viewer sent: those requests are skipped instead of scanned for nobody.
+    private val cancelledPhotoScans: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val faces by lazy { FaceServices.get(applicationContext) }
 
     // Runs [block] on the face thread and hands its value (or its error) to Flutter.
@@ -220,6 +228,16 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                // Everything the app needs is on the device: the search models and
+                // the face recognition model (downloaded, or placed there by hand).
+                "areAllModelsReady" -> {
+                    executor.execute {
+                        val ready = modelManager.areModelsReady() &&
+                            (ModelCatalog.FACE_MODELS.all { modelManager.isModelVerified(it) } || faces.engine.isReady())
+                        runOnUiThread { result.success(ready) }
+                    }
+                }
+
                 "getModelInfo" -> {
                     executor.execute {
                         val statuses = modelManager.getModelStatuses().map {
@@ -228,7 +246,8 @@ class MainActivity : FlutterActivity() {
                                 "fileName"   to it.fileName,
                                 "sizeBytes"  to it.sizeBytes,
                                 "downloaded" to it.downloaded,
-                                "verified"   to it.verified
+                                "verified"   to it.verified,
+                                "group"      to it.group
                             )
                         }
                         runOnUiThread { result.success(statuses) }
@@ -236,12 +255,16 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "downloadModels" -> {
+                    // Which models: "search" (the CLIP pair, the default) and/or
+                    // "faces" (the face recognition model), searched first.
+                    val groups = call.argument<List<String>>("groups") ?: listOf(ModelGroup.SEARCH)
+                    val requested = ModelCatalog.forGroups(groups)
                     executor.execute {
-                        if (modelManager.areModelsReady()) {
+                        if (requested.all { modelManager.isModelVerified(it) }) {
                             runOnUiThread { result.success(true) }
                             return@execute
                         }
-                        if (!modelManager.hasEnoughFreeSpace()) {
+                        if (!modelManager.hasEnoughFreeSpace(requested)) {
                             runOnUiThread {
                                 result.error(
                                     "INSUFFICIENT_STORAGE",
@@ -254,7 +277,7 @@ class MainActivity : FlutterActivity() {
 
                         downloadExecutor.execute {
                             try {
-                                modelManager.downloadAll { progress ->
+                                modelManager.download(requested) { progress ->
                                     runOnUiThread {
                                         modelDownloadSink?.success(
                                             mapOf(
@@ -269,7 +292,9 @@ class MainActivity : FlutterActivity() {
                                         )
                                     }
                                 }
-                                runOnUiThread { result.success(modelManager.areModelsReady()) }
+                                runOnUiThread {
+                                    result.success(requested.all { modelManager.isModelVerified(it) })
+                                }
                             } catch (e: Exception) {
                                 runOnUiThread {
                                     result.error("DOWNLOAD_FAILED", e.message, null)
@@ -284,9 +309,15 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
 
-                "deleteModels" -> {
+                // Deletes every model (search and face recognition). People already
+                // found and the search index are kept; everything that needs a model
+                // waits until they are downloaded again.
+                "deleteModels" -> faceTask(result) {
+                    WorkManager.getInstance(applicationContext).cancelUniqueWork(FaceScanWorker.UNIQUE_WORK_NAME)
                     modelManager.deleteModels()
-                    result.success(true)
+                    modelManager.deleteFaceModels()
+                    faces.engine.reloadSessions()
+                    true
                 }
 
                 "getEmbeddingCount" -> {
@@ -779,10 +810,90 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                // Photos by several people at once. [mode]: any / together / only
+                // (see FaceStore.peoplePhotos). Same shape as personPhotos.
+                "peoplePhotos" -> faceTask(result) {
+                    val ids = (call.argument<List<Number>>("personIds") ?: emptyList()).map { it.toLong() }
+                    val mode = call.argument<String>("mode") ?: "together"
+                    faces.store.peoplePhotos(ids, mode).map { (uri, _) ->
+                        mapOf(
+                            "path" to uri,
+                            "score" to 1.0,
+                            "isVideo" to false,
+                            "videoUri" to "",
+                            "timestampMs" to 0L,
+                        )
+                    }
+                }
+
+                "peopleCounts" -> faceTask(result) {
+                    val ids = (call.argument<List<Number>>("personIds") ?: emptyList()).map { it.toLong() }
+                    faces.store.peopleCounts(ids)
+                }
+
                 "personFaces" -> faceTask(result) {
                     val id = (call.argument<Number>("personId") ?: 0).toLong()
                     faces.store.personFaces(id).map { f ->
                         mapOf("faceId" to f.faceId, "good" to f.good, "photoUri" to f.photoUri)
+                    }
+                }
+
+                // The people in one photo, for tapping their faces in the viewer (hidden people stay out).
+                // A photo the scan hasn't reached yet is analysed on the spot (one photo is cheap).
+                "cancelPhotoFaces" -> {
+                    (call.argument<Number>("token"))?.let {
+                        if (cancelledPhotoScans.size > 200) cancelledPhotoScans.clear()
+                        cancelledPhotoScans.add(it.toLong())
+                    }
+                    result.success(true)
+                }
+
+                "photoFaces" -> photoFacesExecutor.execute {
+                    try {
+                        val uri = call.argument<String>("uri") ?: ""
+                        val token = call.argument<Number>("token")?.toLong()
+                        if (token != null && cancelledPhotoScans.remove(token)) {
+                            runOnUiThread { result.success(emptyList<Any>()) }
+                            return@execute
+                        }
+                        // Not scanned yet: scan it. Scanned, but with faces still unrecognised: finish them.
+                        // If that goes wrong, whatever faces are already stored are still returned.
+                        try {
+                            faces.scanner.scanOne(uri)
+                        } catch (e: Throwable) {
+                            android.util.Log.w("MainActivity", "scanning $uri failed: ${e.message}")
+                        }
+                        val summaries = HashMap<Long, dev.twentyonevision.app.embedder.faces.PersonSummary?>()
+                        val found = faces.store.photoFaces(uri).mapNotNull { f ->
+                            val p = summaries.getOrPut(f.personId) { faces.store.personSummary(f.personId) }
+                            if (p == null || p.hidden) {
+                                null
+                            } else {
+                                mapOf(
+                                    "faceId" to f.faceId,
+                                    "left" to f.boxL, "top" to f.boxT, "right" to f.boxR, "bottom" to f.boxB,
+                                    "photoW" to f.photoW, "photoH" to f.photoH,
+                                    "person" to mapOf(
+                                        "id" to p.id,
+                                        "name" to p.name,
+                                        "hidden" to p.hidden,
+                                        "faceCount" to p.faceCount,
+                                        "photoCount" to p.photoCount,
+                                        "coverFaceId" to p.coverFaceId,
+                                    ),
+                                )
+                            }
+                        }
+                        runOnUiThread { result.success(found) }
+                    } catch (e: Throwable) {
+                        runOnUiThread { result.error("PHOTO_FACES_FAILED", e.message ?: e.toString(), null) }
+                    }
+                }
+
+                // How far the scan of a photo opened in the viewer has got (null when none is running).
+                "photoScanStatus" -> faceTask(result) {
+                    faces.scanner.photoProgress[call.argument<String>("uri") ?: ""]?.let { p ->
+                        mapOf("stage" to p.stage, "faces" to p.faces, "total" to p.total, "more" to p.more)
                     }
                 }
 
@@ -818,12 +929,49 @@ class MainActivity : FlutterActivity() {
                     true
                 }
 
+                // Returns the merge's history id (for "Undo"), 0 if nothing was merged.
                 "mergePeople" -> faceTask(result) {
                     faces.clusterer.merge(
                         (call.argument<Number>("keepId") ?: 0).toLong(),
                         (call.argument<Number>("otherId") ?: 0).toLong(),
                     )
-                    true
+                }
+
+                // Past merges that can still be undone, newest first.
+                "mergeHistory" -> faceTask(result) {
+                    faces.store.mergeHistory().map { r ->
+                        mapOf(
+                            "id" to r.id,
+                            "keptId" to r.keptId,
+                            "keptName" to r.keptName,
+                            "keptCover" to r.keptCover,
+                            "removedName" to r.removedName,
+                            "removedCover" to r.removedCover,
+                            "faceCount" to r.faceIds.size,
+                            "createdAt" to r.createdAt,
+                        )
+                    }
+                }
+
+                // The two groups a person's faces fall into (null if too few clear faces).
+                "previewSplit" -> faceTask(result) {
+                    faces.clusterer.previewSplit((call.argument<Number>("personId") ?: 0).toLong())?.let { p ->
+                        mapOf(
+                            "first" to p.first,
+                            "second" to p.second,
+                            "firstCovers" to p.firstCovers,
+                            "secondCovers" to p.secondCovers,
+                        )
+                    }
+                }
+
+                "splitPerson" -> faceTask(result) {
+                    val ids = (call.argument<List<Number>>("faceIds") ?: emptyList()).map { it.toLong() }
+                    faces.clusterer.splitPerson((call.argument<Number>("personId") ?: 0).toLong(), ids)
+                }
+
+                "undoMerge" -> faceTask(result) {
+                    faces.clusterer.undoMerge((call.argument<Number>("id") ?: 0).toLong())
                 }
 
                 // Pairs of people who may be the same person, most likely first.

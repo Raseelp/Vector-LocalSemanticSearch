@@ -12,6 +12,7 @@ import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
 import 'package:twentyonevision/utils/floating_bar.dart';
+import 'package:twentyonevision/view/people_filter_screen.dart';
 import 'package:twentyonevision/view/settings_screen.dart';
 import 'package:twentyonevision/view/widget/collections_tab.dart';
 import 'package:twentyonevision/view/widget/faces_tab.dart';
@@ -83,7 +84,16 @@ class _HomeScreenState extends State<HomeScreen> {
         return PopScope(
           canPop: controller.homeTab == _tabSearch,
           onPopInvokedWithResult: (didPop, _) {
-            if (!didPop) controller.setHomeTab(_tabSearch);
+            if (didPop) return;
+            // Choosing people: back first cancels that, and stays on the tab.
+            if (Get.isRegistered<FacesController>()) {
+              final faces = Get.find<FacesController>();
+              if (faces.selecting) {
+                faces.stopSelecting();
+                return;
+              }
+            }
+            controller.setHomeTab(_tabSearch);
           },
           child: Scaffold(
             backgroundColor: AppColors.canvas,
@@ -133,31 +143,59 @@ class _HomeScreenState extends State<HomeScreen> {
                     bottom: 0,
                     child: _KeyboardHide(
                       hidden: keyboardOpen,
-                      child: _FloatingNavBar(
-                        index: controller.homeTab,
-                        shrunk: _shrunk,
-                        showActivityDot: controller.isScanning,
-                        onChanged: (i) {
-                          if (i != controller.homeTab) {
-                            HapticFeedback.selectionClick();
-                            // A newly shown tab is at rest, so the bar is full size.
-                            _shrunk = false;
-                          }
-                          controller.setHomeTab(i);
-                          // Opening Faces: refresh, and make sure the scan is going.
-                          if (i == _tabFaces) {
-                            final faces = Get.find<FacesController>();
-                            faces.refreshAll();
-                            faces.startScan();
-                          }
-                          // Search opens ready to type - once the tab is
-                          // actually showing (it's offstage until then).
-                          if (i == _tabSearch) {
-                            WidgetsBinding.instance.addPostFrameCallback((_) {
-                              controller.searchFocusNode.requestFocus();
-                            });
-                          }
-                        },
+                      // Rebuilds with the People tab's "choose people" state: while that is
+                      // on, the bar turns into the button that goes on to the photos.
+                      child: GetBuilder<FacesController>(
+                        builder: (faces) => _FloatingNavBar(
+                          selection:
+                              faces.selecting && controller.homeTab == _tabFaces
+                              ? _BarSelection(
+                                  chosen: faces.selectedPeople.length,
+                                  onCancel: faces.stopSelecting,
+                                  onFind: () {
+                                    final people = faces.selectedPeople;
+                                    if (people.isEmpty) return;
+                                    faces.stopSelecting();
+                                    Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) =>
+                                            PeopleFilterScreen(people: people),
+                                      ),
+                                    );
+                                  },
+                                )
+                              : null,
+                          index: controller.homeTab,
+                          shrunk: _shrunk,
+                          showActivityDot: controller.isScanning,
+                          onChanged: (i) {
+                            if (i != controller.homeTab) {
+                              HapticFeedback.selectionClick();
+                              // A newly shown tab is at rest, so the bar is full size.
+                              _shrunk = false;
+                            }
+                            controller.setHomeTab(i);
+                            // Choosing people belongs to the People tab: leaving it ends that.
+                            if (i != _tabFaces &&
+                                Get.isRegistered<FacesController>()) {
+                              final faces = Get.find<FacesController>();
+                              if (faces.selecting) faces.stopSelecting();
+                            }
+                            // Opening Faces: refresh, and make sure the scan is going.
+                            if (i == _tabFaces) {
+                              final faces = Get.find<FacesController>();
+                              faces.refreshAll();
+                              faces.startScan();
+                            }
+                            // Search opens ready to type - once the tab is
+                            // actually showing (it's offstage until then).
+                            if (i == _tabSearch) {
+                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                controller.searchFocusNode.requestFocus();
+                              });
+                            }
+                          },
+                        ),
                       ),
                     ),
                   ),
@@ -281,18 +319,36 @@ const _navTabs = [
 // so while it's active the pill has nothing selected and the button takes
 // over the highlight. Tonal like the rest of the app (parchment on canvas,
 // primary for "on"), not a dark slab.
+/// While choosing people in the People tab: how many are ticked and what the
+/// bar's two actions do.
+class _BarSelection {
+  const _BarSelection({
+    required this.chosen,
+    required this.onCancel,
+    required this.onFind,
+  });
+
+  final int chosen;
+  final VoidCallback onCancel;
+  final VoidCallback onFind;
+}
+
 class _FloatingNavBar extends StatelessWidget {
   const _FloatingNavBar({
     required this.index,
     required this.onChanged,
     required this.showActivityDot,
     required this.shrunk,
+    this.selection,
   });
 
   final int index;
   final ValueChanged<int> onChanged;
   final bool showActivityDot;
   final bool shrunk;
+
+  // Non-null while choosing people: the bar becomes the "find photos" button.
+  final _BarSelection? selection;
 
   @override
   Widget build(BuildContext context) {
@@ -302,6 +358,9 @@ class _FloatingNavBar extends StatelessWidget {
     final width = MediaQuery.of(context).size.width;
     final margin = width >= 400 ? 20.0 : 16.0;
     final compact = width < 380;
+    final selection = this.selection;
+    final choosing = selection != null;
+    final ready = choosing && selection.chosen > 0;
 
     // Scrolling down shrinks the whole bar toward its bottom edge and lets it
     // settle lower into the gap beneath it, so it recedes from the content;
@@ -333,46 +392,169 @@ class _FloatingNavBar extends StatelessWidget {
                   // it, a touch more see-through while it's out of the way.
                   child: BackdropFilter(
                     filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                    // The same pill either way: only its colour and contents change, so it
+                    // reads as the bar itself turning into the button (and back).
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 340),
                       curve: Curves.easeOutCubic,
                       height: _barHeight,
                       padding: const EdgeInsets.all(_barInset),
                       decoration: BoxDecoration(
-                        color: AppColors.parchment.withValues(
-                          alpha: shrunk ? 0.55 : 0.72,
-                        ),
+                        color: ready
+                            ? AppColors.primary
+                            : AppColors.parchment.withValues(
+                                alpha: shrunk ? 0.55 : 0.72,
+                              ),
                         borderRadius: BorderRadius.circular(AppRadius.pill),
-                        border: Border.all(color: AppColors.hairline),
+                        border: Border.all(
+                          color: ready ? AppColors.primary : AppColors.hairline,
+                        ),
                       ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          for (final tab in _navTabs)
-                            _NavItem(
-                              tab: tab,
-                              selected: index == tab.value,
-                              showDot:
-                                  tab.value == _tabLibrary && showActivityDot,
-                              compact: compact,
-                              onTap: () => onChanged(tab.value),
-                            ),
-                        ],
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 260),
+                        switchInCurve: Curves.easeOut,
+                        switchOutCurve: Curves.easeIn,
+                        layoutBuilder: (current, previous) => Stack(
+                          fit: StackFit.expand,
+                          children: [...previous, if (current != null) current],
+                        ),
+                        child: choosing
+                            ? _SelectionContent(
+                                key: const ValueKey('choose'),
+                                selection: selection,
+                              )
+                            : Row(
+                                key: const ValueKey('tabs'),
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  for (final tab in _navTabs)
+                                    _NavItem(
+                                      tab: tab,
+                                      selected: index == tab.value,
+                                      showDot:
+                                          tab.value == _tabLibrary &&
+                                          showActivityDot,
+                                      compact: compact,
+                                      onTap: () => onChanged(tab.value),
+                                    ),
+                                ],
+                              ),
                       ),
                     ),
                   ),
                 ),
               ),
-              const SizedBox(width: AppSpacing.sm),
-              _SearchButton(
-                active: index == _tabSearch,
-                shrunk: shrunk,
-                onTap: () => onChanged(_tabSearch),
+              // The round Search button slides away while choosing (the pill grows into
+              // the space), and comes back after. Kept mounted, just folded to zero width.
+              TweenAnimationBuilder<double>(
+                tween: Tween<double>(end: choosing ? 0 : 1),
+                duration: const Duration(milliseconds: 340),
+                curve: Curves.easeOutCubic,
+                builder: (context, t, child) => ClipRect(
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    widthFactor: t,
+                    child: Opacity(opacity: t.clamp(0.0, 1.0), child: child),
+                  ),
+                ),
+                child: IgnorePointer(
+                  ignoring: choosing,
+                  child: Row(
+                    children: [
+                      const SizedBox(width: AppSpacing.sm),
+                      _SearchButton(
+                        active: index == _tabSearch,
+                        shrunk: shrunk,
+                        onTap: () => onChanged(_tabSearch),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+// What the pill shows while choosing people: a close button on the left, and the
+// action across the middle - "Choose people" until someone is ticked, then the
+// button to see their photos.
+class _SelectionContent extends StatelessWidget {
+  const _SelectionContent({super.key, required this.selection});
+
+  final _BarSelection selection;
+
+  @override
+  Widget build(BuildContext context) {
+    final ready = selection.chosen > 0;
+    final foreground = ready ? AppColors.onPrimary : AppColors.ink;
+    final label = selection.chosen == 0
+        ? 'Choose people'
+        : (selection.chosen == 1
+              ? 'See their photos'
+              : 'Find photos with these ${selection.chosen}');
+
+    return Row(
+      children: [
+        Semantics(
+          button: true,
+          label: 'Cancel',
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: selection.onCancel,
+            child: Container(
+              width: _chipHeight,
+              height: _chipHeight,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: foreground.withValues(alpha: ready ? 0.18 : 0.08),
+              ),
+              child: Icon(Icons.close_rounded, size: 20, color: foreground),
+            ),
+          ),
+        ),
+        Expanded(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: ready ? selection.onFind : null,
+            child: Center(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                child: Row(
+                  key: ValueKey(label),
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (ready) ...[
+                      Icon(
+                        Icons.photo_library_outlined,
+                        size: 18,
+                        color: foreground,
+                      ),
+                      const SizedBox(width: AppSpacing.sm),
+                    ],
+                    Flexible(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: ready ? foreground : AppColors.ink48,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        // Same width as the close button, so the label is centred in the pill.
+        const SizedBox(width: _chipHeight),
+      ],
     );
   }
 }

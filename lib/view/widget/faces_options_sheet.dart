@@ -5,6 +5,7 @@ import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
 import 'package:twentyonevision/view/hidden_people_screen.dart';
+import 'package:twentyonevision/view/merge_history_screen.dart';
 import 'package:twentyonevision/view/widget/confirm_dialog.dart';
 import 'package:twentyonevision/view/widget/face_widgets.dart';
 
@@ -194,6 +195,16 @@ class _OptionsBodyState extends State<_OptionsBody> {
               onTap: () {
                 Navigator.of(context).pop();
                 _faces.retune();
+              },
+            ),
+            const Divider(height: 1, color: AppColors.dividerSoft),
+            SheetRow(
+              icon: Icons.undo_rounded,
+              label: 'Undo a merge',
+              subtitle: 'Split two people you merged by mistake',
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const MergeHistoryScreen()));
               },
             ),
             const Divider(height: 1, color: AppColors.dividerSoft),

@@ -290,9 +290,39 @@ class NativeServices {
     return (list ?? const []).cast<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
   }
 
+  /// Photos by several people at once. [mode]: 'any', 'together' or 'only'
+  /// (see PeopleMode). Same shape as [personPhotos].
+  Future<List<Map<String, dynamic>>> peoplePhotos(List<int> personIds, String mode) async {
+    final list = await _channel.invokeListMethod<dynamic>('peoplePhotos', {'personIds': personIds, 'mode': mode});
+    return (list ?? const []).cast<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  /// How many photos each mode would give for these people.
+  Future<Map<String, int>> peopleCounts(List<int> personIds) async {
+    final map = await _channel.invokeMapMethod<String, dynamic>('peopleCounts', {'personIds': personIds});
+    return {for (final e in (map ?? const <String, dynamic>{}).entries) e.key: (e.value as num).toInt()};
+  }
+
   Future<List<PersonFace>> personFaces(int personId) async {
     final list = await _channel.invokeListMethod<dynamic>('personFaces', {'personId': personId});
     return (list ?? const []).map((e) => PersonFace.fromMap(e as Map<dynamic, dynamic>)).toList();
+  }
+
+  /// The recognised people in one photo, with where their faces are.
+  ///
+  /// [token] identifies the viewer asking: if it is closed before the request's turn
+  /// comes, [cancelPhotoFaces] with the same token skips the (then pointless) scan.
+  Future<List<PhotoFace>> photoFaces(String uri, {int? token}) async {
+    final list = await _channel.invokeListMethod<dynamic>('photoFaces', {'uri': uri, 'token': token});
+    return (list ?? const []).map((e) => PhotoFace.fromMap(e as Map<dynamic, dynamic>)).toList();
+  }
+
+  Future<void> cancelPhotoFaces(int token) => _channel.invokeMethod('cancelPhotoFaces', {'token': token});
+
+  /// How far the scan of a photo opened in the viewer has got, or null if none is running.
+  Future<PhotoScanStatus?> photoScanStatus(String uri) async {
+    final map = await _channel.invokeMapMethod<String, dynamic>('photoScanStatus', {'uri': uri});
+    return map == null ? null : PhotoScanStatus.fromMap(map);
   }
 
   /// A square picture of one face.
@@ -308,8 +338,31 @@ class NativeServices {
       _channel.invokeMethod('hidePerson', {'personId': personId, 'hidden': hidden});
 
   /// Joins [otherId] into [keepId]; the name and edits carry over.
-  Future<void> mergePeople({required int keepId, required int otherId}) =>
-      _channel.invokeMethod('mergePeople', {'keepId': keepId, 'otherId': otherId});
+  ///
+  /// Returns the merge's history id (for undoing it), 0 if nothing was merged.
+  Future<int> mergePeople({required int keepId, required int otherId}) async {
+    final id = await _channel.invokeMethod<int>('mergePeople', {'keepId': keepId, 'otherId': otherId});
+    return id ?? 0;
+  }
+
+  /// Merges that can still be undone, newest first.
+  Future<List<MergeRecord>> mergeHistory() async {
+    final list = await _channel.invokeListMethod<dynamic>('mergeHistory');
+    return (list ?? const []).map((e) => MergeRecord.fromMap(e as Map<dynamic, dynamic>)).toList();
+  }
+
+  /// The two groups a person's faces fall into, or null if there are too few clear faces.
+  Future<SplitPreview?> previewSplit(int personId) async {
+    final map = await _channel.invokeMapMethod<String, dynamic>('previewSplit', {'personId': personId});
+    return map == null ? null : SplitPreview.fromMap(map);
+  }
+
+  /// Moves [faceIds] out of the person into a new one; returns the new person's id.
+  Future<int> splitPerson(int personId, List<int> faceIds) async =>
+      await _channel.invokeMethod<int>('splitPerson', {'personId': personId, 'faceIds': faceIds}) ?? 0;
+
+  /// Splits a merged person back out; false if that merge can't be found any more.
+  Future<bool> undoMerge(int id) async => await _channel.invokeMethod<bool>('undoMerge', {'id': id}) ?? false;
 
   /// Pairs of people who may be the same person, most likely first.
   Future<List<MergeSuggestion>> suggestMerges({int limit = 20}) async {
@@ -492,8 +545,15 @@ class NativeServices {
     await _channel.invokeMethod('clearEmbeddings');
   }
 
+  /// The search (CLIP) models are downloaded and verified.
   Future<bool> areModelsReady() async {
     return await _channel.invokeMethod<bool>('areModelsReady') ?? false;
+  }
+
+  /// Everything the app needs is on the device: the search models and the
+  /// face recognition model.
+  Future<bool> areAllModelsReady() async {
+    return await _channel.invokeMethod<bool>('areAllModelsReady') ?? false;
   }
 
   Future<List<ModelStatus>> getModelInfo() async {
@@ -508,9 +568,13 @@ class NativeServices {
 
   /// Progress is reported via [modelDownloadProgressStream]; this only
   /// resolves once the download finishes or fails.
-  Future<bool> downloadModels() async {
+  ///
+  /// [groups] picks what to download: 'search' (the CLIP models, the
+  /// default) and/or 'faces' (the face recognition model). The result says
+  /// whether everything asked for is now on the device.
+  Future<bool> downloadModels({List<String> groups = const ['search']}) async {
     try {
-      return await _channel.invokeMethod<bool>('downloadModels') ?? false;
+      return await _channel.invokeMethod<bool>('downloadModels', {'groups': groups}) ?? false;
     } on PlatformException catch (e) {
       debugPrint('downloadModels failed: ${e.code} ${e.message}');
       rethrow;
@@ -521,9 +585,11 @@ class NativeServices {
     await _channel.invokeMethod('cancelModelDownload');
   }
 
+  /// Deletes every model - the search models and the face recognition model.
   Future<void> deleteModels() async {
     await _channel.invokeMethod('deleteModels');
   }
+
 
   Stream<ModelDownloadProgress> modelDownloadProgressStream() {
     return _modelDownloadChannel.receiveBroadcastStream().map(
@@ -559,6 +625,58 @@ class Person {
       );
 }
 
+/// The two groups one person's faces fall into (the bigger group first).
+class SplitPreview {
+  SplitPreview({required this.first, required this.second, required this.firstCovers, required this.secondCovers});
+
+  final List<int> first, second; // every face id in each group
+  final List<int> firstCovers, secondCovers; // a few clear ones to show
+
+  factory SplitPreview.fromMap(Map<dynamic, dynamic> m) {
+    List<int> ints(String key) => (m[key] as List).map((e) => (e as num).toInt()).toList();
+    return SplitPreview(
+      first: ints('first'),
+      second: ints('second'),
+      firstCovers: ints('firstCovers'),
+      secondCovers: ints('secondCovers'),
+    );
+  }
+}
+
+/// One merge the user made, as remembered for undo.
+class MergeRecord {
+  MergeRecord({
+    required this.id,
+    required this.keptId,
+    required this.keptName,
+    required this.keptCover,
+    required this.removedName,
+    required this.removedCover,
+    required this.faceCount,
+    required this.createdAt,
+  });
+
+  final int id;
+  final int keptId;
+  final String? keptName;
+  final int? keptCover; // a face of the person who stayed
+  final String? removedName;
+  final int? removedCover; // a face of the person who was folded in
+  final int faceCount; // faces that moved
+  final int createdAt; // millis since epoch
+
+  factory MergeRecord.fromMap(Map<dynamic, dynamic> m) => MergeRecord(
+        id: (m['id'] as num).toInt(),
+        keptId: (m['keptId'] as num).toInt(),
+        keptName: m['keptName'] as String?,
+        keptCover: (m['keptCover'] as num?)?.toInt(),
+        removedName: m['removedName'] as String?,
+        removedCover: (m['removedCover'] as num?)?.toInt(),
+        faceCount: (m['faceCount'] as num?)?.toInt() ?? 0,
+        createdAt: (m['createdAt'] as num?)?.toInt() ?? 0,
+      );
+}
+
 /// Two people who may be one.
 class MergeSuggestion {
   MergeSuggestion({required this.aId, required this.bId, required this.score});
@@ -575,6 +693,70 @@ class MergeSuggestion {
 }
 
 /// One face of a person (for the review screen).
+/// Progress of the face scan of one photo: which step, and how many faces.
+class PhotoScanStatus {
+  PhotoScanStatus({required this.stage, required this.faces, required this.total, required this.more});
+
+  final String stage; // reading, detecting, recognising, placing
+  final int faces; // faces found
+  final int total; // faces being recognised
+  final bool more; // finishing a photo scanned before
+
+  factory PhotoScanStatus.fromMap(Map<dynamic, dynamic> m) => PhotoScanStatus(
+        stage: m['stage'] as String? ?? 'reading',
+        faces: (m['faces'] as num?)?.toInt() ?? 0,
+        total: (m['total'] as num?)?.toInt() ?? 0,
+        more: m['more'] as bool? ?? false,
+      );
+
+  /// What to tell the person, in a few words.
+  String get message {
+    String faceWord(int n) => n == 1 ? '1 face' : '$n faces';
+    switch (stage) {
+      case 'reading':
+        return 'Opening the photo';
+      case 'detecting':
+        return 'Looking for faces';
+      case 'recognising':
+        return more ? 'Identifying ${total == 1 ? '1 more face' : '$total more faces'}' : 'Found ${faceWord(faces)} · identifying';
+      case 'placing':
+        return faces == 0 ? 'No faces here' : 'Matching ${faceWord(total == 0 ? faces : total)} to people';
+      default:
+        return 'Looking for faces';
+    }
+  }
+}
+
+/// A recognised face in a photo: where it is (0..1 fractions of the upright photo) and who it is.
+class PhotoFace {
+  PhotoFace({
+    required this.faceId,
+    required this.left,
+    required this.top,
+    required this.right,
+    required this.bottom,
+    required this.photoW,
+    required this.photoH,
+    required this.person,
+  });
+
+  final int faceId;
+  final double left, top, right, bottom;
+  final int photoW, photoH; // 0 if unknown
+  final Person person;
+
+  factory PhotoFace.fromMap(Map<dynamic, dynamic> m) => PhotoFace(
+        faceId: (m['faceId'] as num).toInt(),
+        left: (m['left'] as num).toDouble(),
+        top: (m['top'] as num).toDouble(),
+        right: (m['right'] as num).toDouble(),
+        bottom: (m['bottom'] as num).toDouble(),
+        photoW: (m['photoW'] as num?)?.toInt() ?? 0,
+        photoH: (m['photoH'] as num?)?.toInt() ?? 0,
+        person: Person.fromMap(m['person'] as Map<dynamic, dynamic>),
+      );
+}
+
 class PersonFace {
   PersonFace({required this.faceId, required this.good, required this.photoUri});
 

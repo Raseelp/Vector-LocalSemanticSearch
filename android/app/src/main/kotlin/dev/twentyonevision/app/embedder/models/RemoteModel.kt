@@ -9,8 +9,20 @@ data class RemoteModel(
     val fileName: String,
     val url: String,
     val sha256: String,
-    val sizeBytes: Long
+    val sizeBytes: Long,
+    // What the model is for - see ModelGroup.
+    val group: String = ModelGroup.SEARCH,
+    // A sub-folder of the app's private files to keep it in (null = the top level).
+    val folder: String? = null
 )
+
+object ModelGroup {
+    /** The CLIP models: needed for searching and indexing. */
+    const val SEARCH = "search"
+
+    /** The face recognition model: only needed for the Faces tab. */
+    const val FACES = "faces"
+}
 
 object ModelCatalog {
 
@@ -30,6 +42,26 @@ object ModelCatalog {
             sizeBytes = 253829539L
         )
     )
+
+    // The face recognition model (ArcFace ResNet50, InsightFace w600k_r50). Kept
+    // apart from MODELS on purpose: search and indexing must keep working for
+    // anyone who never downloads it. It goes in "face_models", the folder the
+    // face pipeline already looks in, so nothing else needs to know where it is.
+    val FACE_MODELS: List<RemoteModel> = listOf(
+        RemoteModel(
+            id = "face_recognition",
+            fileName = "w600k_r50.onnx",
+            url = "${BuildConfig.MODEL_BASE_URL}/w600k_r50.onnx",
+            sha256 = "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43",
+            sizeBytes = 174383860L,
+            group = ModelGroup.FACES,
+            folder = "face_models"
+        )
+    )
+
+    val ALL: List<RemoteModel> = MODELS + FACE_MODELS
+
+    fun forGroups(groups: Collection<String>): List<RemoteModel> = ALL.filter { it.group in groups }
 
     val totalBytes: Long get() = MODELS.sumOf { it.sizeBytes }
 }

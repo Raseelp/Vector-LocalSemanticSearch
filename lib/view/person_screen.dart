@@ -6,8 +6,8 @@ import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
-import 'package:twentyonevision/view/face_review_screen.dart';
 import 'package:twentyonevision/view/widget/face_widgets.dart';
+import 'package:twentyonevision/view/widget/person_menu.dart';
 import 'package:twentyonevision/view/widget/search_results.dart';
 
 /// One person: their face, name, and every photo they're in - the same tiles
@@ -23,17 +23,22 @@ class PersonScreen extends StatefulWidget {
 
 class _PersonScreenState extends State<PersonScreen> {
   late final FacesController _faces = Get.find<FacesController>();
+  bool _pushed = false; // this page has registered itself as open
 
   @override
   void initState() {
     super.initState();
     // After the first frame: opening notifies listeners, which can't happen mid-build.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _faces.openPerson(widget.person));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _pushed = true;
+      _faces.openPerson(widget.person, push: true);
+    });
   }
 
   @override
   void dispose() {
-    _faces.closePerson();
+    if (_pushed) _faces.closePerson();
     super.dispose();
   }
 
@@ -42,112 +47,7 @@ class _PersonScreenState extends State<PersonScreen> {
     if (name != null) _faces.rename(person, name);
   }
 
-  void _menu(Person person) {
-    showFacesSheet<void>(
-      context,
-      title: person.name ?? 'This person',
-      builder: (sheet) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SheetRow(
-            icon: Icons.edit_outlined,
-            label: person.name == null ? 'Add a name' : 'Rename',
-            onTap: () {
-              Navigator.of(sheet).pop();
-              _rename(person);
-            },
-          ),
-          const Divider(height: 1, color: AppColors.dividerSoft),
-          SheetRow(
-            icon: Icons.merge_type_rounded,
-            label: 'Same person as someone else',
-            subtitle: 'Merge with another person',
-            onTap: () {
-              Navigator.of(sheet).pop();
-              _pickMerge(person);
-            },
-          ),
-          const Divider(height: 1, color: AppColors.dividerSoft),
-          SheetRow(
-            icon: Icons.grid_view_rounded,
-            label: 'Review faces',
-            subtitle: 'Take out faces that are someone else',
-            onTap: () {
-              Navigator.of(sheet).pop();
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => FaceReviewScreen(person: person)),
-              );
-            },
-          ),
-          const Divider(height: 1, color: AppColors.dividerSoft),
-          SheetRow(
-            icon: Icons.visibility_off_outlined,
-            label: 'Hide this person',
-            onTap: () {
-              Navigator.of(sheet).pop();
-              _faces.setHidden(person, true);
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  // Everyone else, the likeliest matches first.
-  void _pickMerge(Person person) {
-    final others = _faces.people.where((p) => p.id != person.id).toList()
-      ..sort((x, y) {
-        final sx = _faces.suggestionScoreFor(person, x) ?? -1;
-        final sy = _faces.suggestionScoreFor(person, y) ?? -1;
-        if (sx != sy) return sy.compareTo(sx);
-        return y.photoCount.compareTo(x.photoCount);
-      });
-
-    showFacesSheet<void>(
-      context,
-      title: 'Merge ${person.name ?? 'this person'} with...',
-      builder: (sheet) => others.isEmpty
-          ? const Padding(
-              padding: EdgeInsets.all(AppSpacing.xl),
-              child: Text('There is nobody else to merge with yet.'),
-            )
-          : ListView.separated(
-              shrinkWrap: true,
-              itemCount: others.length,
-              separatorBuilder: (_, __) => const Divider(height: 1, color: AppColors.dividerSoft),
-              itemBuilder: (_, i) {
-                final other = others[i];
-                final suggested = _faces.suggestionScoreFor(person, other) != null;
-                return InkWell(
-                  onTap: () {
-                    Navigator.of(sheet).pop();
-                    confirmMerge(context, _faces, keep: person, other: other);
-                  },
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.sm),
-                    child: Row(
-                      children: [
-                        FaceAvatar(faceId: other.coverFaceId, size: 44),
-                        const SizedBox(width: AppSpacing.md),
-                        Expanded(
-                          child: Text(
-                            other.name ?? 'Unnamed  ·  ${other.photoCount} photos',
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
-                        ),
-                        if (suggested)
-                          Text(
-                            'Looks similar',
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppColors.primary),
-                          ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-    );
-  }
+  void _menu(Person person) => showPersonMenu(context, _faces, person);
 
   @override
   Widget build(BuildContext context) {

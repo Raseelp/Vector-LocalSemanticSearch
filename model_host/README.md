@@ -1,6 +1,7 @@
 # model_host/
 
-Holds the two CLIP weight files and a throwaway local server for testing the
+Holds the model files (the two CLIP weight files and the face recognition
+model) and a throwaway local server for testing the
 in-app download flow. Everything here is gitignored — nothing in this
 directory should ever be committed.
 
@@ -26,8 +27,9 @@ Worth checking before trusting the flow:
 
 ## Publishing for real
 
-1. Create a GitHub Release tagged `models-v1` and upload `clip_vision_ts.pt`
-   and `clip_text_ts.pt` as its assets.
+1. Create a GitHub Release tagged `models-v1` and upload `clip_vision_ts.pt`,
+   `clip_text_ts.pt` and `w600k_r50.onnx` (the face recognition model - the app
+   downloads all three on first launch) as its assets.
 2. `MODEL_BASE_URL` in the `release` build type
    (`android/app/build.gradle.kts`) already points at that tag - update it
    if you use a different tag name.
@@ -40,4 +42,10 @@ Current checksums:
 ```
 clip_vision_ts.pt  sha256:2aa36306b7da2e6bb866a61863b1aa96a79f1dc6d22285f2098ac77c2be12178  (351463461 bytes)
 clip_text_ts.pt    sha256:7d06dd86e914be7910063a1a9613e4591a1cf0d8fbfb5f6648d1bef4bb04b09b  (253829539 bytes)
+w600k_r50.onnx     sha256:4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43  (174383860 bytes)
 ```
+
+The face recognition model is InsightFace's `w600k_r50` (ArcFace ResNet50,
+WebFace600K), taken from the `buffalo_m` pack. It is in `ModelCatalog.FACE_MODELS`
+and downloads into `face_models/` in the app's private files, which is where
+the face pipeline already looks for models.

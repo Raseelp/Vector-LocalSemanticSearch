@@ -13,6 +13,7 @@ import dev.twentyonevision.app.embedder.ScanEngineHolder
 import dev.twentyonevision.app.embedder.ScanForegroundService
 import io.flutter.plugin.common.EventChannel
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
@@ -106,7 +107,18 @@ class FaceServices private constructor(context: Context) {
  * It waits while the indexing scan is running (they'd fight over the CPU), and
  * picks up the new photos that scan added once it has finished.
  */
+/** Where the scan of one photo opened in the viewer has got to (read by the viewer while it waits). */
+class PhotoScanProgress {
+    @Volatile var stage = "reading" // reading -> detecting -> recognising -> placing
+    @Volatile var faces = 0 // faces found worth recognising
+    @Volatile var total = 0 // how many are being recognised now
+    @Volatile var more = false // finishing a photo that was scanned before
+}
+
 class FaceScanner(private val context: Context, private val services: FaceServices) {
+
+    /** The photos being scanned for the viewer right now, by uri. */
+    val photoProgress = ConcurrentHashMap<String, PhotoScanProgress>()
 
     private class Attempt(var processed: Int = 0, var failed: Int = 0)
 
@@ -212,6 +224,124 @@ class FaceScanner(private val context: Context, private val services: FaceServic
     }
 
     private val runLock = Any()
+    private val commitLock = Any()
+
+    /**
+     * A photo the scan has already been through, opened in the viewer: its first-pass
+     * left the faces beyond the clearest few (and the unclear ones) found but not
+     * recognised. Recognise them now, so every face in the photo can be tapped. True if
+     * any were done.
+     */
+    private fun completeDeferred(uri: String, hash: Long, progress: PhotoScanProgress): Boolean {
+        val engine = services.engine
+        val store = services.store
+        val faces = store.deferredFaces(hash)
+        if (faces.isEmpty()) {
+            store.markPhotoComplete(hash)
+            return false
+        }
+        progress.more = true
+        progress.faces = faces.size
+        progress.total = faces.size
+
+        val loaded = try {
+            FaceImageLoader.loadWithInfo(context, Uri.parse(uri), SCAN_SIDE, allowSlightlySmaller = true)
+        } catch (e: Exception) {
+            return false
+        } catch (e: OutOfMemoryError) {
+            return false
+        } ?: return false // the photo is gone or unreadable
+
+        class Item(val face: FaceStore.DeferredFace, val aligned: AlignedFace)
+        val items = ArrayList<Item>()
+        val bitmap = loaded.bitmap
+        try {
+            val w = bitmap.width.toFloat()
+            val h = bitmap.height.toFloat()
+            for (f in faces) {
+                val landmarks = FloatArray(10) { k -> f.landmarks[k] * (if (k % 2 == 0) w else h) }
+                items += Item(f, engine.align(bitmap, landmarks))
+            }
+        } catch (e: Exception) {
+            // Something odd about one face must not leak the ones already cut out.
+            items.forEach { it.aligned.bitmap.recycle() }
+            Log.w(TAG, "preparing faces failed for $uri: ${e.message}")
+            return false
+        } finally {
+            bitmap.recycle()
+        }
+
+        try {
+            progress.stage = "recognising"
+            val vectors = engine.embedAligned(items.map { it.aligned.bitmap })
+            progress.stage = "placing"
+            synchronized(commitLock) {
+                // Clearest first, as the normal scan does it.
+                for (i in items.indices.sortedByDescending { items[it].face.rank }) {
+                    val item = items[i]
+                    if (!store.isDeferred(item.face.id)) continue
+                    val good = FaceQuality.isGood(item.face.sizePx, item.face.score, item.aligned.sharpness, item.face.yaw)
+                    store.setFaceRecognised(item.face.id, vectors[i], item.aligned.sharpness, good)
+                    services.clusterer.assignRecognised(item.face.id, hash, vectors[i], good, item.face.rank)
+                }
+                store.markPhotoComplete(hash)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "finishing faces failed for $uri: ${e.message}")
+            return false
+        } finally {
+            items.forEach { it.aligned.bitmap.recycle() }
+        }
+        return true
+    }
+
+    /**
+     * Looks for faces in one photo right now: for a photo opened in the viewer
+     * before the background scan has reached it. Only photos already in the search
+     * index (that is where their identity comes from), and only with the models
+     * the stored people were made with. True if the photo now has its faces stored.
+     */
+    fun scanOne(uri: String): Boolean {
+        val store = services.store
+        val known = store.photoHashForUri(uri)
+        // Marked complete: every face in it was recognised before, so there is nothing to do.
+        if (known != null && store.isPhotoComplete(known)) return false
+
+        val progress = PhotoScanProgress()
+        photoProgress[uri] = progress
+        try {
+            return scanOneInner(uri, known, progress)
+        } finally {
+            photoProgress.remove(uri)
+        }
+    }
+
+    private fun scanOneInner(uri: String, known: Long?, progress: PhotoScanProgress): Boolean {
+        val engine = services.engine
+        val store = services.store
+        if (!engine.isReady()) return false
+        if (!sameModels(store.getMeta(META_MODEL_KEY), engine.modelKey())) return false
+        // Already scanned: the first pass recognised only its clearest faces - do the rest now.
+        if (known != null) return completeDeferred(uri, known, progress)
+        val item = ScanEngineHolder.embeddingEngine(context).indexedImages().firstOrNull { it.uri == uri } ?: return false
+
+        val thorough = FaceSettings.thorough(context)
+        val photo = try {
+            FaceImageLoader.loadWithInfo(context, Uri.parse(uri), if (thorough) REF_SIDE else SCAN_SIDE, allowSlightlySmaller = true)
+        } catch (e: Exception) {
+            Log.w(TAG, "could not read $uri: ${e.message}")
+            return false
+        } catch (e: OutOfMemoryError) {
+            return false
+        }
+        try {
+            Run({ false }, {}).also { it.watch = progress }.single(Prepared(item, photo), thorough)
+        } catch (e: Exception) {
+            Log.w(TAG, "single-photo scan failed for $uri: ${e.message}")
+            return false
+        }
+        return store.hasPhotoUri(uri)
+    }
 
     // Earlier builds listed the bundled detector's unpacked copy as its own model,
     // so stored keys look like ".bundled_det_2.5g|w600k_r50". That is the same
@@ -228,6 +358,9 @@ class FaceScanner(private val context: Context, private val services: FaceServic
         val attempt = Attempt()
         val timing = Timing()
         val tried = HashSet<Long>()
+
+        // Set for a photo opened in the viewer: its progress is reported here.
+        var watch: PhotoScanProgress? = null
 
         var phase = "scan"
         var processed = 0
@@ -421,7 +554,11 @@ class FaceScanner(private val context: Context, private val services: FaceServic
 
         // Finds the faces in one photo, cuts them out, and decides which are worth
         // recognising now. Recognition itself is batched - see flush().
-        private fun analyse(prepared: Prepared, thorough: Boolean) {
+        //
+        // [everyFace]: recognise every face that is big enough, not just the clearest few
+        // (a photo opened in the viewer is one photo - cheap - and the person wants each
+        // face in it to be tappable). The unclear ones still only join people that exist.
+        private fun analyse(prepared: Prepared, thorough: Boolean, everyFace: Boolean = false) {
             val item = prepared.item
             val photo = prepared.photo
 
@@ -435,6 +572,7 @@ class FaceScanner(private val context: Context, private val services: FaceServic
 
             val small = photo.bitmap
             val built = ArrayList<PendingFace>()
+            watch?.stage = "detecting"
             try {
                 var t = System.nanoTime()
                 val detected = engine.detect(small, thorough)
@@ -468,7 +606,11 @@ class FaceScanner(private val context: Context, private val services: FaceServic
 
                 // Recognise only the clear faces now (the best few, in a big group);
                 // the rest are stored as they are and recognised in pass 2.
-                val now = built.filter { it.good }.sortedByDescending { it.rank }.take(MAX_FACES_NOW).toSet()
+                val now = if (everyFace) {
+                    built.toSet()
+                } else {
+                    built.filter { it.good }.sortedByDescending { it.rank }.take(MAX_FACES_NOW).toSet()
+                }
                 for (face in built) {
                     if (face !in now) {
                         face.aligned?.recycle()
@@ -476,6 +618,11 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                     }
                 }
                 timing.alignNs += System.nanoTime() - t
+                watch?.let {
+                    it.faces = built.size
+                    it.total = now.size
+                    it.stage = if (now.isEmpty()) "placing" else "recognising"
+                }
 
                 val job = Job(item, refW, refH, small.width.toFloat(), small.height.toFloat(), built)
                 if (job.toRecognise == 0) {
@@ -517,6 +664,7 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                 return
             }
             consecutiveFailures = 0
+            watch?.stage = "placing"
 
             waiting.forEachIndexed { i, face -> face.embedding = vectors[i] }
             val done = ArrayList(jobs)
@@ -531,8 +679,19 @@ class FaceScanner(private val context: Context, private val services: FaceServic
             pendingFaces = 0
         }
 
-        // Stores a photo and places its recognised faces among the people.
+        // Stores a photo and places its recognised faces among the people. Under a lock
+        // shared with scanOne(), so a photo opened in the viewer while the background
+        // scan reaches it is never stored twice.
         private fun commit(job: Job) {
+            synchronized(commitLock) { commitLocked(job) }
+        }
+
+        private fun commitLocked(job: Job) {
+            if (store.hasPhoto(job.item.hash)) {
+                job.faces.forEach { it.aligned?.recycle(); it.aligned = null }
+                processed++
+                return
+            }
             val t = System.nanoTime()
             val rows = job.faces.map { f ->
                 val box = f.box
@@ -553,6 +712,8 @@ class FaceScanner(private val context: Context, private val services: FaceServic
 
             val ids = store.insertPhoto(job.item.hash, job.item.uri, job.width, job.height, rows)
             clusterer.assignPhotoFaces(job.item.hash, ids, rows)
+            // Every face in it recognised (a photo with few faces, or one scanned from the viewer).
+            if (job.faces.all { it.embedding != null }) store.markPhotoComplete(job.item.hash)
             processed++
 
             if (++sinceMerge >= MERGE_EVERY) {
@@ -560,6 +721,12 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                 clusterer.mergeSimilar()
             }
             timing.dbNs += System.nanoTime() - t
+        }
+
+        /** One photo, start to finish, outside the normal run (see [scanOne]). */
+        fun single(prepared: Prepared, thorough: Boolean) {
+            analyse(prepared, thorough, everyFace = true)
+            flush()
         }
 
         // ---------------- pass 2: the faces pass 1 left for later ----------------
@@ -624,11 +791,17 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                         timing.embedNs += System.nanoTime() - t
                         timing.recognised += items.size
                         timing.batches += (items.size + 7) / 8
-                        items.forEachIndexed { i, item ->
-                            store.setFaceEmbedding(item.faceId, vectors[i], item.aligned.sharpness)
-                            clusterer.assignExisting(item.faceId, item.hash, vectors[i])
+                        // Under the lock the viewer's top-up (completeDeferred) also takes, and only
+                        // for faces nobody has recognised in the meantime.
+                        synchronized(commitLock) {
+                            items.forEachIndexed { i, item ->
+                                if (!store.isDeferred(item.faceId)) return@forEachIndexed
+                                store.setFaceEmbedding(item.faceId, vectors[i], item.aligned.sharpness)
+                                clusterer.assignExisting(item.faceId, item.hash, vectors[i])
+                            }
                         }
                     }
+                    for (photo in batch) store.markPhotoComplete(photo.hash)
                     failures = 0
                 } catch (e: Exception) {
                     Log.e(TAG, "refining faces failed: ${e.message}", e)

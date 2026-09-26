@@ -1,8 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:twentyonevision/services/native_services.dart';
+import 'package:twentyonevision/utils/app_colors.dart';
 
 /// Everything about faces and people: the scan status (the scan runs by
 /// itself in the background - see FaceScanner), the list of people, and the
@@ -47,6 +49,13 @@ class FacesController extends GetxController {
     } catch (e) {
       debugPrint('startFaceScan failed: $e');
     }
+  }
+
+  /// The face recognition model was downloaded or removed: look again, and
+  /// start the scan if there is now something it can do.
+  Future<void> onFaceModelChanged() async {
+    await refreshAll();
+    await startScan();
   }
 
   /// The user's stop button. Stays stopped, across restarts, until [resumeScan].
@@ -307,7 +316,19 @@ class FacesController extends GetxController {
   // Recently shown photo thumbnails, so re-opening someone is instant.
   final Map<String, Uint8List> _thumbCache = {};
 
-  Future<void> openPerson(Person person) async {
+  // The person pages that are open, oldest first. There can be several at once
+  // (person -> photo -> a face in it -> that person), and they all show the one
+  // "active" person, so when the top one closes the one beneath is put back.
+  final List<Person> _openPeople = [];
+
+  /// Shows [person]. [push]: a new person page has opened (as opposed to reloading
+  /// the one already showing).
+  Future<void> openPerson(Person person, {bool push = false}) async {
+    if (push) {
+      _openPeople.add(person);
+    } else if (_openPeople.isNotEmpty) {
+      _openPeople[_openPeople.length - 1] = person;
+    }
     final token = ++_openToken;
     active = person;
     photos = [];
@@ -369,7 +390,32 @@ class FacesController extends GetxController {
     }
   }
 
+  /// A person page has closed. If another is still open beneath it, that person
+  /// is shown again.
   void closePerson() {
+    _openToken++;
+    if (_openPeople.isNotEmpty) _openPeople.removeLast();
+    if (_openPeople.isNotEmpty) {
+      final back = _openPeople.last;
+      active = back;
+      photos = [];
+      photoThumbs.clear();
+      isLoadingPhotos = true;
+      isLoadingThumbs = false;
+      // Not now: this runs while the closing page is being taken apart.
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (_openPeople.isEmpty || _openPeople.last.id != back.id) return;
+        final fresh = await _native.personSummary(back.id);
+        if (_openPeople.isEmpty || _openPeople.last.id != back.id) return;
+        await openPerson(fresh ?? back);
+      });
+      return;
+    }
+    _clearActive();
+  }
+
+  // Nothing is showing (the person was hidden or merged away): the page will close itself.
+  void _clearActive() {
     _openToken++;
     active = null;
     photos = [];
@@ -385,11 +431,173 @@ class FacesController extends GetxController {
     final fresh = await _native.personSummary(current.id);
     if (fresh == null) {
       // Gone (merged away, or no faces left).
-      closePerson();
+      _clearActive();
       update();
       return;
     }
     await openPerson(fresh);
+  }
+
+  // ---- picking several people ----
+
+  bool selecting = false;
+  final Set<int> selectedIds = {};
+
+  /// The people ticked so far, in the order they are shown.
+  List<Person> get selectedPeople => people.where((p) => selectedIds.contains(p.id)).toList();
+
+  /// Starts picking (optionally with someone already ticked).
+  void startSelecting([Person? first]) {
+    selecting = true;
+    selectedIds
+      ..clear()
+      ..addAll(first == null ? const <int>[] : [first.id]);
+    update();
+  }
+
+  void toggleSelected(Person person) {
+    if (!selectedIds.remove(person.id)) selectedIds.add(person.id);
+    update();
+  }
+
+  void stopSelecting() {
+    selecting = false;
+    selectedIds.clear();
+    update();
+  }
+
+  // ---- photos by several people ----
+
+  List<Person> filterPeople = [];
+
+  // True once the results screen has been opened (so an empty [filterPeople]
+  // means "everyone was taken off", not "not loaded yet").
+  bool filterOpened = false;
+  String filterMode = PeopleMode.together;
+  Map<String, int> filterCounts = {};
+  List<Map<String, dynamic>> filterPhotos = [];
+  final Map<String, Uint8List> filterThumbs = {};
+  bool isFilterLoading = false;
+  bool isFilterThumbs = false;
+  int _filterToken = 0;
+
+  /// Opens the photos of [chosen] together, in the way that suits how many there are.
+  Future<void> openPeopleFilter(List<Person> chosen) async {
+    filterOpened = true;
+    filterPeople = List.of(chosen);
+    filterMode = chosen.length == 1 ? PeopleMode.any : PeopleMode.together;
+    await _reloadFilter();
+  }
+
+  Future<void> setFilterMode(String mode) async {
+    if (mode == filterMode) return;
+    filterMode = mode;
+    await _reloadFilter();
+  }
+
+  /// Adds another person to the search (from the results screen's "+").
+  Future<void> addToFilter(Person person) async {
+    if (filterPeople.any((p) => p.id == person.id)) return;
+    filterPeople = [...filterPeople, person];
+    // The choices depend on how many people there are: with a second person
+    // "with anyone" becomes "plus others", and from none to one it starts again.
+    if (filterPeople.length == 1) filterMode = PeopleMode.any;
+    if (filterPeople.length == 2 && filterMode == PeopleMode.any) filterMode = PeopleMode.together;
+    await _reloadFilter();
+  }
+
+  /// Takes a person off the search - even the last one (the results are then
+  /// empty until someone is added again).
+  Future<void> removeFromFilter(Person person) async {
+    filterPeople = filterPeople.where((p) => p.id != person.id).toList();
+    if (filterPeople.length <= 1 && filterMode == PeopleMode.together) filterMode = PeopleMode.any;
+    await _reloadFilter();
+  }
+
+  void closePeopleFilter() {
+    _filterToken++;
+    filterOpened = false;
+    filterPeople = [];
+    filterPhotos = [];
+    filterThumbs.clear();
+    filterCounts = {};
+    isFilterLoading = false;
+    isFilterThumbs = false;
+  }
+
+  Future<void> _reloadFilter() async {
+    final token = ++_filterToken;
+    final ids = filterPeople.map((p) => p.id).toList();
+    filterPhotos = [];
+    filterThumbs.clear();
+    isFilterThumbs = false;
+
+    // Nobody chosen: nothing to look for.
+    if (ids.isEmpty) {
+      filterCounts = {};
+      isFilterLoading = false;
+      update();
+      return;
+    }
+
+    isFilterLoading = true;
+    update();
+
+    try {
+      final results = await Future.wait([
+        _native.peoplePhotos(ids, filterMode),
+        _native.peopleCounts(ids),
+      ]);
+      if (token != _filterToken) return;
+      filterPhotos = results[0] as List<Map<String, dynamic>>;
+      filterCounts = results[1] as Map<String, int>;
+    } catch (e) {
+      debugPrint('peoplePhotos failed: $e');
+    }
+    isFilterLoading = false;
+    isFilterThumbs = filterPhotos.isNotEmpty;
+    update();
+
+    // Same approach as one person's photos: cached ones at once, the rest a few
+    // at a time in list order.
+    final pending = <Map<String, dynamic>>[];
+    for (final item in filterPhotos) {
+      final key = item['path'] as String;
+      final cached = _thumbCache.remove(key);
+      if (cached != null) {
+        _thumbCache[key] = cached;
+        filterThumbs[key] = cached;
+      } else {
+        pending.add(item);
+      }
+    }
+    if (filterThumbs.isNotEmpty) update();
+
+    var next = 0;
+    var sinceUpdate = 0;
+    Future<void> worker() async {
+      while (token == _filterToken && next < pending.length) {
+        final key = pending[next++]['path'] as String;
+        try {
+          final bytes = await _native.loadThumbnail(uri: key, isVideo: false, size: 420);
+          _thumbCache.remove(key);
+          _thumbCache[key] = bytes;
+          if (_thumbCache.length > 500) _thumbCache.remove(_thumbCache.keys.first);
+          if (token != _filterToken) return;
+          filterThumbs[key] = bytes;
+        } catch (_) {}
+        if (token == _filterToken && ++sinceUpdate >= 6) {
+          sinceUpdate = 0;
+          update();
+        }
+      }
+    }
+
+    await Future.wait([for (var i = 0; i < 4; i++) worker()]);
+    if (token == _filterToken) {
+      isFilterThumbs = false;
+      update();
+    }
   }
 
   // ---- edits ----
@@ -408,13 +616,13 @@ class FacesController extends GetxController {
 
   Future<void> setHidden(Person person, bool hidden) async {
     await _native.hidePerson(person.id, hidden);
-    if (hidden && active?.id == person.id) closePerson();
+    if (hidden && active?.id == person.id) _clearActive();
     await refreshPeople();
   }
 
   /// Joins [other] into [keep] (the one with the name, or the bigger one, is kept).
   Future<void> merge({required Person keep, required Person other}) async {
-    await _native.mergePeople(keepId: keep.id, otherId: other.id);
+    final recordId = await _native.mergePeople(keepId: keep.id, otherId: other.id);
     await refreshPeople();
     if (active?.id == other.id) {
       final fresh = await _native.personSummary(keep.id);
@@ -422,6 +630,56 @@ class FacesController extends GetxController {
     } else if (active?.id == keep.id) {
       await _reloadActive();
     }
+    await refreshSuggestions();
+    _offerUndo(recordId);
+  }
+
+  // Right after a merge: a way out for a slip of the finger. (Later, the same
+  // merge can still be undone from Face options.)
+  void _offerUndo(int recordId) {
+    if (recordId <= 0) return;
+    Get.closeAllSnackbars();
+    Get.snackbar(
+      'Merged',
+      'Two people are now one. Not right?',
+      mainButton: TextButton(
+        onPressed: () {
+          Get.closeAllSnackbars();
+          undoMerge(recordId);
+        },
+        child: const Text('Undo', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+      ),
+      duration: const Duration(seconds: 8),
+      snackPosition: SnackPosition.BOTTOM,
+      // Clear of the floating bar.
+      margin: const EdgeInsets.fromLTRB(20, 0, 20, 110),
+      backgroundColor: AppColors.ink,
+      colorText: Colors.white,
+      borderRadius: 14,
+    );
+  }
+
+  /// Splits a merge back into two people (see MergeHistoryScreen).
+  Future<void> undoMerge(int recordId) async {
+    try {
+      await _native.undoMerge(recordId);
+    } catch (e) {
+      debugPrint('undoMerge failed: $e');
+    }
+    await refreshPeople();
+    await _reloadActive();
+    await refreshSuggestions();
+  }
+
+  Future<List<MergeRecord>> mergeHistory() => _native.mergeHistory();
+
+  Future<SplitPreview?> previewSplit(Person person) => _native.previewSplit(person.id);
+
+  /// Splits [faceIds] off [person] into a new person, then refreshes what is showing.
+  Future<void> splitPerson(Person person, List<int> faceIds) async {
+    await _native.splitPerson(person.id, faceIds);
+    await refreshPeople();
+    await _reloadActive();
     await refreshSuggestions();
   }
 
@@ -498,4 +756,18 @@ class FacesController extends GetxController {
     await startScan();
     await refreshStatus();
   }
+}
+
+/// The ways of combining several people when looking for photos.
+class PeopleMode {
+  PeopleMode._();
+
+  /// At least one of them.
+  static const any = 'any';
+
+  /// All of them, with or without other people.
+  static const together = 'together';
+
+  /// All of them and nobody else.
+  static const only = 'only';
 }

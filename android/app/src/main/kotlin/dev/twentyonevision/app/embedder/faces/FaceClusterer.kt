@@ -44,6 +44,46 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
     // One of a person's best faces, kept to compare people face-to-face.
     private class Exemplar(val rank: Float, val vector: FloatArray)
 
+    // One "look" of a person: a group of their faces that resemble each other
+    // (with and without glasses, in sun and in shade, years apart). A person is
+    // one or more of these, and a new face belongs to them if it matches ANY look.
+    // That is what makes a merge stick: when two groups are joined as one person,
+    // both looks are kept, so later faces of either kind find their way to that
+    // person instead of starting a new group. (One average of everyone would sit
+    // between the two looks and match neither well.)
+    private class Proto(first: FloatArray) {
+        val sum = first.copyOf()
+        val centroid = first.copyOf()
+        var count = 1
+
+        fun add(e: FloatArray) {
+            for (i in sum.indices) sum[i] += e[i]
+            count++
+            refresh()
+        }
+
+        fun absorb(other: Proto) {
+            for (i in sum.indices) sum[i] += other.sum[i]
+            count += other.count
+            refresh()
+        }
+
+        fun copy(): Proto {
+            val c = Proto(centroid)
+            for (i in sum.indices) c.sum[i] = sum[i]
+            c.count = count
+            c.refresh()
+            return c
+        }
+
+        private fun refresh() {
+            var norm = 0.0
+            for (v in sum) norm += v * v
+            val n = sqrt(norm).toFloat()
+            for (i in sum.indices) centroid[i] = if (n > 0f) sum[i] / n else 0f
+        }
+    }
+
     // Vector length is whatever the recognition model outputs, so the arrays
     // are sized by the first face added.
     private class PersonState(val id: Long, var pinned: Boolean, var named: Boolean) {
@@ -51,6 +91,7 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
         var centroid = FloatArray(0)
         var count = 0
         val photos = HashSet<Long>()
+        val protos = ArrayList<Proto>()
 
         // The best few faces (from the second face on: with just one, the
         // average IS that face). Two people who are really one - seen in
@@ -59,7 +100,7 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
         private val exemplars = ArrayList<Exemplar>()
         private var firstRank = 0f
 
-        fun add(e: FloatArray, rank: Float = 0f) {
+        fun add(e: FloatArray, rank: Float = 0f, join: Float = 0.42f) {
             if (sum.isEmpty()) {
                 sum = FloatArray(e.size)
                 centroid = FloatArray(e.size)
@@ -71,6 +112,19 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
             count++
             refresh()
             keep(Exemplar(rank, e))
+
+            // Into the look it resembles (if it resembles one closely enough), else a new look.
+            var best = -1
+            var bestSim = -2f
+            for (i in protos.indices) {
+                val sim = dotProduct(e, protos[i].centroid)
+                if (sim > bestSim) {
+                    bestSim = sim
+                    best = i
+                }
+            }
+            if (best >= 0 && bestSim >= join) protos[best].add(e) else protos += Proto(e)
+            capProtos()
         }
 
         fun absorb(other: PersonState) {
@@ -87,6 +141,42 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
             count += other.count
             refresh()
             for (x in theirs) keep(x)
+
+            // Both people's looks are kept.
+            for (p in other.protos) protos += p.copy()
+            capProtos()
+        }
+
+        /** How well [e] matches this person: its closest look. */
+        fun bestSimTo(e: FloatArray): Float {
+            var best = -1f
+            for (p in protos) {
+                if (p.centroid.size != e.size) continue
+                val sim = dotProduct(e, p.centroid)
+                if (sim > best) best = sim
+            }
+            return best
+        }
+
+        // A handful of looks is plenty; past that, the two most alike become one.
+        private fun capProtos() {
+            while (protos.size > MAX_PROTOS) {
+                var bi = 0
+                var bj = 1
+                var bestSim = -2f
+                for (i in protos.indices) {
+                    for (j in i + 1 until protos.size) {
+                        val sim = dotProduct(protos[i].centroid, protos[j].centroid)
+                        if (sim > bestSim) {
+                            bestSim = sim
+                            bi = i
+                            bj = j
+                        }
+                    }
+                }
+                protos[bi].absorb(protos[bj])
+                protos.removeAt(bj)
+            }
         }
 
         fun refresh() {
@@ -108,24 +198,31 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
         }
     }
 
-    // How two people compare: their averages, and their individual faces.
+    // How two people compare: their closest looks, and their individual faces.
     private class Link(val centroid: Float, val best: Float, val top3: Float, val pairs: Int)
 
-    private fun dot(a: FloatArray, b: FloatArray): Float {
-        var d = 0f
-        for (i in a.indices) d += a[i] * b[i]
-        return d
+    // How alike two people's closest looks are.
+    private fun protoSim(a: PersonState, b: PersonState): Float {
+        var best = -1f
+        for (x in a.protos) {
+            for (y in b.protos) {
+                if (x.centroid.size != y.centroid.size) continue
+                val sim = dotProduct(x.centroid, y.centroid)
+                if (sim > best) best = sim
+            }
+        }
+        return best
     }
 
     private fun link(a: PersonState, b: PersonState): Link? {
         if (a.count == 0 || b.count == 0 || a.centroid.size != b.centroid.size) return null
-        val centroid = dot(a.centroid, b.centroid)
+        val centroid = protoSim(a, b)
         val top = FloatArray(3) { -1f }
         var pairs = 0
         for (x in a.faceVectors()) {
             for (y in b.faceVectors()) {
                 if (x.vector.size != y.vector.size) continue
-                val sim = dot(x.vector, y.vector)
+                val sim = dotProduct(x.vector, y.vector)
                 pairs++
                 // keep the three best, largest first
                 if (sim > top[0]) { top[2] = top[1]; top[1] = top[0]; top[0] = sim }
@@ -159,6 +256,7 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
 
     private fun state(): HashMap<Long, PersonState> {
         people?.let { return it }
+        val join = config.join
         val map = HashMap<Long, PersonState>()
         for (p in store.allPeople()) map[p.id] = PersonState(p.id, p.pinned, p.name != null)
         photoPeople.clear()
@@ -167,7 +265,7 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
             val person = map[personId] ?: return@forEachFace
             person.photos.add(f.photoHash)
             photoPeople.getOrPut(f.photoHash) { HashSet() }.add(person.id)
-            if (f.good) person.add(f.embedding, f.rank)
+            if (f.good) person.add(f.embedding, f.rank, join)
         }
         people = map
         return map
@@ -183,27 +281,46 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
 
         for (i in order) {
             val row = rows[i]
-            val faceId = ids[i]
             // Found but not recognised yet (an empty vector): it is placed in pass 2.
             if (row.embedding.isEmpty()) continue
-            val best = closest(listOf(state.values), row.embedding, photoHash, blocked = null, threshold = if (row.good) cfg.join else cfg.weakJoin)
-
-            if (best != null) {
-                store.setFacePerson(faceId, best.id)
-                if (row.good) best.add(row.embedding, row.rank)
-                best.photos.add(photoHash)
-                photoPeople.getOrPut(photoHash) { HashSet() }.add(best.id)
-            } else if (row.good) {
-                val id = store.createPerson()
-                val person = PersonState(id, pinned = false, named = false)
-                person.add(row.embedding, row.rank)
-                person.photos.add(photoHash)
-                state[id] = person
-                store.setFacePerson(faceId, id)
-                photoPeople.getOrPut(photoHash) { HashSet() }.add(id)
-            }
-            // A weak face nobody matches stays unassigned.
+            place(state, cfg, photoHash, ids[i], row.embedding, row.good, row.rank)
         }
+    }
+
+    /**
+     * Places one face that was stored without a vector and has now been recognised in
+     * full (a photo opened in the viewer): like a face of a new photo - it joins a person,
+     * or, if it is clear, starts one.
+     */
+    fun assignRecognised(faceId: Long, photoHash: Long, embedding: FloatArray, good: Boolean, rank: Float) =
+        synchronized(lock) { place(state(), config, photoHash, faceId, embedding, good, rank) }
+
+    private fun place(
+        state: HashMap<Long, PersonState>,
+        cfg: FaceClusterConfig,
+        photoHash: Long,
+        faceId: Long,
+        embedding: FloatArray,
+        good: Boolean,
+        rank: Float,
+    ) {
+        val best = closest(listOf(state.values), embedding, photoHash, blocked = null, threshold = if (good) cfg.join else cfg.weakJoin)
+
+        if (best != null) {
+            store.setFacePerson(faceId, best.id)
+            if (good) best.add(embedding, rank, cfg.join)
+            best.photos.add(photoHash)
+            photoPeople.getOrPut(photoHash) { HashSet() }.add(best.id)
+        } else if (good) {
+            val id = store.createPerson()
+            val person = PersonState(id, pinned = false, named = false)
+            person.add(embedding, rank, cfg.join)
+            person.photos.add(photoHash)
+            state[id] = person
+            store.setFacePerson(faceId, id)
+            photoPeople.getOrPut(photoHash) { HashSet() }.add(id)
+        }
+        // A weak face nobody matches stays unassigned.
     }
 
     /**
@@ -235,13 +352,10 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
         for (pool in pools) {
             for (person in pool) {
                 if (person.count == 0) continue
-                val c = person.centroid
-                if (c.size != embedding.size) continue
                 if (person.id == blocked || (taken != null && person.id in taken)) continue
-                var dot = 0f
-                for (i in embedding.indices) dot += embedding[i] * c[i]
-                if (dot >= bestSim) {
-                    bestSim = dot
+                val sim = person.bestSimTo(embedding)
+                if (sim >= bestSim) {
+                    bestSim = sim
                     best = person
                 }
             }
@@ -281,7 +395,7 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
                 if ((minOf(a.id, b.id) to maxOf(a.id, b.id)) in rejected) continue
 
                 // Cheap first: unrelated people are nowhere near each other.
-                val centroidSim = dot(a.centroid, b.centroid)
+                val centroidSim = protoSim(a, b)
                 if (centroidSim < PREFILTER) continue
                 if (sharesPhoto(a, b)) continue
 
@@ -332,12 +446,15 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
                 if (a.named && b.named) continue // the user already told these apart
                 if (a.centroid.size != b.centroid.size) continue
                 if ((minOf(a.id, b.id) to maxOf(a.id, b.id)) in rejected) continue
-                if (dot(a.centroid, b.centroid) < PREFILTER) continue
+                if (protoSim(a, b) < PREFILTER) continue
                 if (sharesPhoto(a, b)) continue
 
+                // Both must hold: several faces of one match several of the other
+                // (not a lone lucky pair - look-alikes, and drawings or cartoons,
+                // produce those), and the closest pair is clearly alike.
                 val l = link(a, b) ?: continue
-                if (l.best < SUGGEST_BEST && l.centroid < SUGGEST_CENTROID) continue
-                out += MergeSuggestion(a.id, b.id, maxOf(l.centroid, l.top3))
+                if (l.pairs < 3 || l.top3 < SUGGEST_TOP3 || l.best < SUGGEST_BEST) continue
+                out += MergeSuggestion(a.id, b.id, l.top3)
             }
         }
         out.sortByDescending { it.score }
@@ -349,16 +466,169 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
         store.rejectMerge(a, b)
     }
 
-    /** Joins [otherId] into [keepId] (the name and pin carry over). */
-    fun merge(keepId: Long, otherId: Long) = synchronized(lock) {
-        if (keepId == otherId) return@synchronized
-        val keep = store.person(keepId) ?: return@synchronized
-        val other = store.person(otherId) ?: return@synchronized
+    /**
+     * Joins [otherId] into [keepId] (the name and pin carry over). Remembers what
+     * it moved so the merge can be undone; returns that record's id (0 if nothing
+     * was merged).
+     */
+    fun merge(keepId: Long, otherId: Long): Long = synchronized(lock) {
+        if (keepId == otherId) return@synchronized 0L
+        val keep = store.person(keepId) ?: return@synchronized 0L
+        val other = store.person(otherId) ?: return@synchronized 0L
+
+        // Written down before anything moves.
+        val movedFaces = store.faceIdsOf(otherId)
+        val recordId = store.logMerge(
+            keptId = keepId, keptName = keep.name, keptCover = store.bestFaceOf(keepId),
+            removedName = other.name, removedCover = store.bestFaceOf(otherId),
+            removedPinned = other.pinned, removedHidden = other.hidden,
+            faceIds = movedFaces,
+        )
+
         store.mergeInto(otherId, keepId)
         if (keep.name == null && other.name != null) store.rename(keepId, other.name)
         store.setPinned(keepId)
         if (keep.hidden) store.setHidden(keepId, true)
         invalidate()
+        recordId
+    }
+
+    // ---- splitting one person into two ----
+
+    class SplitPreview(
+        val first: List<Long>,
+        val second: List<Long>,
+        val firstCovers: List<Long>,
+        val secondCovers: List<Long>,
+    )
+
+    private class SplitFace(val id: Long, val e: FloatArray, val good: Boolean, val rank: Float)
+
+    /**
+     * For a person who is really two (merged by mistake, or grouped wrongly): finds
+     * the two groups their faces fall into, so the user can look at them and split.
+     * Two-means on the clear faces, seeded with the clearest face and the face least
+     * like it; the rest of the faces join whichever group they are closer to.
+     * Null when there are too few clear faces to tell.
+     */
+    fun previewSplit(personId: Long): SplitPreview? = synchronized(lock) {
+        val faces = ArrayList<SplitFace>()
+        store.forEachFace("person_id = $personId") { faces += SplitFace(it.id, it.embedding, it.good, it.rank) }
+        val clear = faces.filter { it.good }
+        if (clear.size < 4) return@synchronized null
+
+        // Two-means from a few different starting pairs, keeping the best split. One
+        // pair is not enough: seeded from a stray odd face, it can end up with a group
+        // of one. Seeds: the clearest face against the one least like it, and then
+        // two more chosen by walking away from those.
+        fun farthest(from: FloatArray): FloatArray = clear.minByOrNull { dotProduct(it.e, from) }!!.e
+        val top = clear.first().e
+        val far1 = farthest(top)
+        val far2 = farthest(far1)
+        val seeds = listOf(top to far1, far1 to far2, far2 to farthest(far2))
+
+        var a = FloatArray(0)
+        var b = FloatArray(0)
+        var bestScore = -1f
+        for ((seedA, seedB) in seeds) {
+            var ca = seedA.copyOf()
+            var cb = seedB.copyOf()
+            var countA = 0
+            var countB = 0
+            for (iteration in 0 until 15) {
+                val sumA = FloatArray(ca.size)
+                val sumB = FloatArray(ca.size)
+                countA = 0
+                countB = 0
+                for (f in clear) {
+                    val toA = dotProduct(f.e, ca) >= dotProduct(f.e, cb)
+                    val target = if (toA) sumA else sumB
+                    for (k in target.indices) target[k] += f.e[k]
+                    if (toA) countA++ else countB++
+                }
+                if (countA == 0 || countB == 0) break
+                val na = normalised(sumA)
+                val nb = normalised(sumB)
+                val moved = dotProduct(na, ca) < 0.9999f || dotProduct(nb, cb) < 0.9999f
+                ca = na
+                cb = nb
+                if (!moved) break
+            }
+            if (countA == 0 || countB == 0) continue
+
+            // How tightly the faces sit around their group's centre, and the smaller
+            // group's share: a lopsided split (one stray face against everyone) is no split.
+            var fit = 0f
+            for (f in clear) fit += maxOf(dotProduct(f.e, ca), dotProduct(f.e, cb))
+            val share = minOf(countA, countB).toFloat() / clear.size
+            val score = if (share >= SPLIT_MIN_SHARE) fit / clear.size + 1f else fit / clear.size
+            if (score > bestScore) {
+                bestScore = score
+                a = ca
+                b = cb
+            }
+        }
+        if (a.isEmpty()) return@synchronized null
+
+        val first = ArrayList<SplitFace>()
+        val second = ArrayList<SplitFace>()
+        // Every face (weak ones too) goes with the group it is nearer to.
+        for (f in faces) {
+            if (f.e.size != a.size) continue
+            if (dotProduct(f.e, a) >= dotProduct(f.e, b)) first += f else second += f
+        }
+        if (first.isEmpty() || second.isEmpty()) return@synchronized null
+
+        // The bigger group first: it is the one that stays with the person.
+        val (big, small) = if (first.size >= second.size) first to second else second to first
+        fun covers(list: List<SplitFace>) = list.sortedWith(compareByDescending<SplitFace> { it.good }.thenByDescending { it.rank })
+            .take(SPLIT_SAMPLE).map { it.id }
+        SplitPreview(big.map { it.id }, small.map { it.id }, covers(big), covers(small))
+    }
+
+    private fun normalised(v: FloatArray): FloatArray {
+        var norm = 0.0
+        for (x in v) norm += x * x
+        val n = sqrt(norm).toFloat()
+        return FloatArray(v.size) { if (n > 0f) v[it] / n else 0f }
+    }
+
+    /**
+     * Moves [faceIds] out of [personId] into a new person. The two are marked "not
+     * the same person" so they are not suggested or merged again; both are kept as
+     * the user's own (regrouping leaves them alone). Returns the new person's id.
+     */
+    fun splitPerson(personId: Long, faceIds: List<Long>): Long = synchronized(lock) {
+        val newId = store.createPerson(pinned = true)
+        store.moveFaces(faceIds, personId, newId)
+        store.setPinned(personId)
+        store.rejectMerge(newId, personId)
+        store.pruneEmptyPeople()
+        invalidate()
+        newId
+    }
+
+    /**
+     * Undoes a merge: the person it removed comes back with their name and the
+     * faces that were theirs, and the two are marked "not the same person" so
+     * neither the suggestions nor automatic merging join them again.
+     */
+    fun undoMerge(recordId: Long): Boolean = synchronized(lock) {
+        val record = store.mergeRecord(recordId) ?: return@synchronized false
+        val restored = store.restorePerson(record)
+
+        val kept = store.person(record.keptId)
+        if (kept != null) {
+            store.rejectMerge(restored, record.keptId)
+            // The kept person may have taken the other one's name in the merge: give it back.
+            if (record.keptName == null && kept.name != null && kept.name == record.removedName) {
+                store.rename(record.keptId, null)
+            }
+        }
+        store.deleteMergeRecord(recordId)
+        store.pruneEmptyPeople()
+        invalidate()
+        true
     }
 
     private fun sharesPhoto(a: PersonState, b: PersonState): Boolean {
@@ -387,7 +657,7 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
         store.forEachFace("person_id IS NULL AND locked = 0 AND good = 1") { f ->
             val best = closest(listOf(state.values, provisional.values), f.embedding, f.photoHash, f.blockedPerson, cfg.join)
             val target = best ?: PersonState(nextTemp--, pinned = false, named = false).also { provisional[it.id] = it }
-            target.add(f.embedding, f.rank)
+            target.add(f.embedding, f.rank, cfg.join)
             target.photos.add(f.photoHash)
             photoPeople.getOrPut(f.photoHash) { HashSet() }.add(target.id)
             assignments += f.id to target.id
@@ -458,8 +728,30 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
         // Averages this far apart or less are unrelated people: skip the finer comparison.
         private const val PREFILTER = 0.26f
 
-        // A pair is suggested when their best matching faces are this alike, or their averages are.
-        private const val SUGGEST_BEST = 0.40f
-        private const val SUGGEST_CENTROID = 0.32f
+        // A pair is suggested only when their three best matching faces average at least
+        // SUGGEST_TOP3 and the single best pair is at least SUGGEST_BEST. Measured on a
+        // few thousand of real photos (338 people): the old rule (one good pair, or
+        // similar averages) suggested about 90 pairs, most of them different people;
+        // 0.40 / 0.42 suggested 5, all likely the same person but too few to be useful;
+        // this in between gives about 15 - a review list worth opening, with the odd
+        // wrong one that "Different" removes for good.
+        private const val SUGGEST_TOP3 = 0.36f
+        private const val SUGGEST_BEST = 0.39f
+
+        // Looks kept per person.
+        private const val MAX_PROTOS = 6
+
+        // Faces shown per group when previewing a split.
+        private const val SPLIT_SAMPLE = 8
+
+        // The smaller group should hold at least this share of the clear faces for the
+        // split to count as real rather than one stray face against everyone else.
+        private const val SPLIT_MIN_SHARE = 0.1f
     }
+}
+
+private fun dotProduct(a: FloatArray, b: FloatArray): Float {
+    var d = 0f
+    for (i in a.indices) d += a[i] * b[i]
+    return d
 }

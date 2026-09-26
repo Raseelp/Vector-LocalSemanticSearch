@@ -5,12 +5,16 @@ class ModelStatus {
   final bool downloaded;
   final bool verified;
 
+  // 'search' (the CLIP models) or 'faces' (the face recognition model).
+  final String group;
+
   const ModelStatus({
     required this.id,
     required this.fileName,
     required this.sizeBytes,
     required this.downloaded,
     required this.verified,
+    this.group = 'search',
   });
 
   factory ModelStatus.fromMap(Map<dynamic, dynamic> map) {
@@ -20,6 +24,7 @@ class ModelStatus {
       sizeBytes: (map['sizeBytes'] as num?)?.toInt() ?? 0,
       downloaded: map['downloaded'] as bool? ?? false,
       verified: map['verified'] as bool? ?? false,
+      group: map['group'] as String? ?? 'search',
     );
   }
 }
@@ -71,6 +76,19 @@ class ModelDownloadProgress {
   double get overallFraction => overallTotalBytes == 0
       ? 0.0
       : (overallBytesDownloaded / overallTotalBytes).clamp(0.0, 1.0);
+
+  /// A transfer speed, e.g. "4.2 MB/s".
+  static String formatSpeed(double bytesPerSecond) {
+    if (bytesPerSecond < 1024 * 1024) {
+      return '${(bytesPerSecond / 1024).toStringAsFixed(0)} KB/s';
+    }
+    return '${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} MB/s';
+  }
+
+  /// True while a file has all its bytes but is still being checked (the
+  /// last step before it counts as downloaded).
+  bool get isVerifying =>
+      !done && totalBytesForModel > 0 && bytesForModel >= totalBytesForModel;
 
   static String formatBytes(int bytes) {
     if (bytes < 1024) return '$bytes B';

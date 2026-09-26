@@ -103,9 +103,10 @@ class _SuggestionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
     // Plain words, not a number: it is a guess, not a measurement to compare.
-    final likely = score >= 0.5
+    // Three levels, in words rather than a number: it is a guess, not a measurement.
+    final likely = score >= 0.46
         ? 'Very likely the same person'
-        : (score >= 0.4 ? 'Probably the same person' : 'Might be the same person');
+        : (score >= 0.40 ? 'Probably the same person' : 'Might be the same person');
 
     return Container(
       padding: const EdgeInsets.all(AppSpacing.base),

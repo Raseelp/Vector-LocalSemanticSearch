@@ -18,5 +18,6 @@ data class ModelStatus(
     val fileName: String,
     val sizeBytes: Long,
     val downloaded: Boolean,
-    val verified: Boolean
+    val verified: Boolean,
+    val group: String = ModelGroup.SEARCH
 )

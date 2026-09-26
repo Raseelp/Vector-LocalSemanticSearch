@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:twentyonevision/controllers/collections_controller.dart';
+import 'package:twentyonevision/controllers/faces_controller.dart';
 import 'package:twentyonevision/controllers/native_controller.dart';
 import 'package:twentyonevision/models/model_status.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
@@ -16,13 +17,11 @@ class SettingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return GetBuilder<NativeController>(
       builder: (controller) {
-        final modelBytes = controller.modelStatuses.fold<int>(
-          0,
-          (sum, m) => sum + m.sizeBytes,
-        );
-        final modelsVerified =
-            controller.modelStatuses.isNotEmpty &&
-            controller.modelStatuses.every((m) => m.verified);
+        final modelBytes = controller.searchModelBytes;
+        final modelsVerified = controller.searchModelsVerified;
+        // Everything a delete would free: the search models plus the downloaded face model.
+        final deletableBytes = (controller.searchModelsVerified ? controller.searchModelBytes : 0) +
+            (controller.faceModelVerified ? controller.faceModelBytes : 0);
 
         return Scaffold(
           backgroundColor: AppColors.canvas,
@@ -39,7 +38,7 @@ class SettingsScreen extends StatelessWidget {
                       AppSpacing.xxl,
                     ),
                     children: [
-                      const _GroupLabel('Model'),
+                      const _GroupLabel('Models'),
                       _GroupCard(
                         children: [
                           _SettingsRow(
@@ -47,9 +46,9 @@ class SettingsScreen extends StatelessWidget {
                                 ? Icons.verified_outlined
                                 : Icons.download_for_offline_outlined,
                             accentIcon: modelsVerified,
-                            title: modelsVerified ? 'CLIP, on this device' : 'Not ready',
+                            title: modelsVerified ? 'Search model (CLIP)' : 'Search model - not ready',
                             subtitle: modelsVerified
-                                ? '${ModelDownloadProgress.formatBytes(modelBytes)} - verified'
+                                ? 'Finds photos by meaning  ·  ${ModelDownloadProgress.formatBytes(modelBytes)}  ·  verified'
                                 : null,
                             trailing: modelsVerified
                                 ? const Icon(
@@ -59,7 +58,42 @@ class SettingsScreen extends StatelessWidget {
                                   )
                                 : null,
                           ),
+                          GetBuilder<FacesController>(
+                            builder: (faces) {
+                              // Ready also covers a model placed on the device by hand.
+                              final ready = faces.status.ready;
+                              final size = ModelDownloadProgress.formatBytes(controller.faceModelBytes);
+                              return _SettingsRow(
+                                icon: ready
+                                    ? Icons.verified_outlined
+                                    : Icons.face_retouching_natural_outlined,
+                                accentIcon: ready,
+                                title: 'Face recognition',
+                                subtitle: ready
+                                    ? 'Groups photos by person  ·  $size  ·  on this device'
+                                    : 'Not downloaded  ·  $size',
+                                trailing: ready
+                                    ? const Icon(
+                                        Icons.check_circle_rounded,
+                                        color: AppColors.primary,
+                                        size: 18,
+                                      )
+                                    : null,
+                              );
+                            },
+                          ),
                         ],
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(AppSpacing.xs, AppSpacing.sm, AppSpacing.xs, 0),
+                        child: Text(
+                          'Both models run only on this device. Your photos, faces and names are never uploaded, '
+                          'and nothing needs the internet once they are downloaded.',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppColors.ink48,
+                            height: 1.4,
+                          ),
+                        ),
                       ),
                       const SizedBox(height: AppSpacing.xl),
                       const _GroupLabel('Permissions'),
@@ -94,18 +128,25 @@ class SettingsScreen extends StatelessWidget {
                       const _GroupLabel('Danger zone'),
                       _GroupCard(
                         children: [
-                          if (modelsVerified)
+                          if (deletableBytes > 0 || modelsVerified)
                             _DangerRow(
                               title: 'Delete AI models',
                               subtitle:
-                                  'Frees ~${ModelDownloadProgress.formatBytes(modelBytes)}',
+                                  'Frees ~${ModelDownloadProgress.formatBytes(deletableBytes)} - both the search and face recognition models',
                               onTap: () => showConfirmDialog(
                                 context,
                                 title: 'Delete AI models?',
                                 message:
-                                    'Search and indexing stop working until you download them again.',
+                                    'Search, indexing and People stop working until you download the models again - you will be taken back to the setup screen. Your photos, the search index and the people already found are kept.',
                                 confirmLabel: 'Delete',
-                                onConfirm: controller.deleteModels,
+                                onConfirm: () {
+                                  controller.deleteModels().then((_) {
+                                    // Back to the root: the app gate now shows the setup screen.
+                                    if (context.mounted) {
+                                      Navigator.of(context).popUntil((route) => route.isFirst);
+                                    }
+                                  });
+                                },
                               ),
                             ),
                           _DangerRow(
