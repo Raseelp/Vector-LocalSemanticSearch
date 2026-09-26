@@ -150,7 +150,8 @@ class FaceModelStore(private val context: Context) {
 
         // Earlier sources win for the same id.
         for (dir in listOf(modelsDir, privateDir)) {
-            dir.listFiles { f -> f.isFile && f.extension.equals("onnx", true) }
+            // Hidden files (".bundled_*", the unpacked copies of bundled models) are not models.
+            dir.listFiles { f -> f.isFile && !f.name.startsWith(".") && f.extension.equals("onnx", true) }
                 ?.sortedBy { it.name }
                 ?.forEach { file ->
                     val id = file.nameWithoutExtension

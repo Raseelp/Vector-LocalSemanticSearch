@@ -177,7 +177,7 @@ class FaceScanner(private val context: Context, private val services: FaceServic
         val store = services.store
         val indexed = ScanEngineHolder.embeddingEngine(context).indexedImages()
         if (indexed.isEmpty()) return false
-        if (store.getMeta(META_MODEL_KEY) != engine.modelKey()) return true
+        if (!sameModels(store.getMeta(META_MODEL_KEY), engine.modelKey())) return true
         if (FaceTuner.needsTuning(context, engine.store)) return true
         val finished = store.processedHashes()
         if (indexed.any { it.hash !in finished }) return true
@@ -212,6 +212,12 @@ class FaceScanner(private val context: Context, private val services: FaceServic
     }
 
     private val runLock = Any()
+
+    // Earlier builds listed the bundled detector's unpacked copy as its own model,
+    // so stored keys look like ".bundled_det_2.5g|w600k_r50". That is the same
+    // model as "det_2.5g|w600k_r50" - not a reason to throw the people away.
+    private fun sameModels(stored: String?, current: String?): Boolean =
+        stored != null && current != null && stored.replace(".bundled_", "") == current
 
     private inner class Run(val shouldStop: () -> Boolean, val onTick: (Map<String, Any?>) -> Unit) {
         val engine = services.engine
@@ -287,11 +293,17 @@ class FaceScanner(private val context: Context, private val services: FaceServic
             // Vectors from a different model pair can't be compared with these,
             // so a swapped model means starting the grouping over.
             val key = engine.modelKey()!!
-            if (store.getMeta(META_MODEL_KEY) != key) {
-                Log.i(TAG, "face model changed to $key - regrouping from scratch")
-                store.wipeAll()
-                clusterer.invalidate()
-                store.setMeta(META_MODEL_KEY, key)
+            val stored = store.getMeta(META_MODEL_KEY)
+            if (stored != key) {
+                if (sameModels(stored, key)) {
+                    // Only the internal name changed (see sameModels): nothing to redo.
+                    store.setMeta(META_MODEL_KEY, key)
+                } else {
+                    Log.i(TAG, "face model changed to $key - regrouping from scratch")
+                    store.wipeAll()
+                    clusterer.invalidate()
+                    store.setMeta(META_MODEL_KEY, key)
+                }
             }
 
             // One-off: find the fastest settings for this phone.

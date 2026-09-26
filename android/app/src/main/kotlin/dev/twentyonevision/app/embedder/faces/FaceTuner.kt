@@ -62,14 +62,20 @@ object FaceTuner {
 
     /** The settings to run [spec] with: the tuned ones, or sensible defaults before tuning. */
     fun configFor(context: Context, spec: FaceModelSpec): RunConfig =
-        RunConfig.decode(prefs(context).getString("cfg_${spec.id}", null)) ?: RunConfig(defaultThreads(spec.kind))
+        RunConfig.decode(saved(context, "cfg_", spec.id)) ?: RunConfig(defaultThreads(spec.kind))
+
+    // Also finds what earlier builds saved under the unpacked copy's name (".bundled_...").
+    private fun saved(context: Context, prefix: String, id: String): String? {
+        val p = prefs(context)
+        return p.getString("$prefix$id", null) ?: p.getString("$prefix.bundled_$id", null)
+    }
 
     fun needsTuning(context: Context, store: FaceModelStore): Boolean {
         val p = prefs(context)
         if (p.getInt("version", 0) != VERSION) return true
         return listOf(FaceModelKind.DETECTOR, FaceModelKind.EMBEDDER).any { kind ->
             val model = store.selected(kind)
-            model != null && !p.contains("cfg_${model.spec.id}")
+            model != null && saved(context, "cfg_", model.spec.id) == null
         }
     }
 
@@ -83,8 +89,8 @@ object FaceTuner {
         val p = prefs(context)
         val parts = listOf(FaceModelKind.EMBEDDER to "Recognition", FaceModelKind.DETECTOR to "Detection").mapNotNull { (kind, label) ->
             val model = store.selected(kind) ?: return@mapNotNull null
-            val cfg = RunConfig.decode(p.getString("cfg_${model.spec.id}", null)) ?: return@mapNotNull null
-            val ms = p.getFloat("ms_${model.spec.id}", 0f)
+            val cfg = RunConfig.decode(saved(context, "cfg_", model.spec.id)) ?: return@mapNotNull null
+            val ms = p.getFloat("ms_${model.spec.id}", p.getFloat("ms_.bundled_${model.spec.id}", 0f))
             "$label: ${cfg.describe()}" + if (ms > 0f) " (${ms.toInt()} ms)" else ""
         }
         return parts.takeIf { it.isNotEmpty() }?.joinToString("\n")
