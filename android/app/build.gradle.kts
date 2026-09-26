@@ -26,9 +26,18 @@ android {
         buildConfig = true
     }
 
+    packaging {
+        jniLibs {
+            // PyTorch and ONNX Runtime can each carry the C++ runtime; either
+            // copy works for both.
+            pickFirsts += "**/libc++_shared.so"
+        }
+    }
+
     defaultConfig {
         applicationId = "dev.twentyonevision.app"
-        minSdk = 23
+        // 24, not 23: ONNX Runtime (face detection) needs at least Android 7.0.
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -90,6 +99,9 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("androidx.work:work-runtime-ktx:2.11.2")
+    // Face detection (SCRFD, an .onnx model bundled in assets) - a second
+    // runtime next to PyTorch, which has no ready-made face models.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
 
     // Needed for R8 to resolve SoLoader's annotations
     compileOnly("javax.annotation:javax.annotation-api:1.3.2")

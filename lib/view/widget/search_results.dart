@@ -219,7 +219,10 @@ class _ResultsSliverGrid extends StatelessWidget {
                 ),
               );
             } else {
-              Get.to(() => ImageViewScreen(imageBytes: bytes, uri: uri));
+              // A collection's / person's grid holds small thumbnails, so the
+              // viewer loads the sharp photo itself; live search results are
+              // already viewer-sized.
+              Get.to(() => ImageViewScreen(imageBytes: bytes, uri: uri, loadFullRes: bytesFor != null));
             }
           },
         );

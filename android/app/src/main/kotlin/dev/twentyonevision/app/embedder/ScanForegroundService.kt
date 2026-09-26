@@ -56,6 +56,11 @@ object ScanForegroundService {
         val elapsedMs: Long
     )
 
+    /** True while an indexing scan is running - face grouping waits for it. */
+    @Volatile
+    var isScanActive: Boolean = false
+        private set
+
     @Volatile
     private var lastSnapshot: Snapshot? = null
     @Volatile
@@ -107,6 +112,7 @@ object ScanForegroundService {
     // a previous run so it can't leak into this one's first notification,
     // and acquires the wake lock.
     fun onScanStarting(context: Context) {
+        isScanActive = true
         lastSnapshot = null
         previousSnapshot = null
         lastProgressMap = null
@@ -119,6 +125,7 @@ object ScanForegroundService {
     // cache, so activeProgress() correctly reports "nothing running" and
     // the next scan's first notification doesn't inherit stale numbers.
     fun onScanEnded() {
+        isScanActive = false
         releaseWakeLock()
         lastSnapshot = null
         previousSnapshot = null

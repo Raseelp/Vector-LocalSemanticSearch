@@ -81,6 +81,8 @@ class ScanWorker(
                     // the notification just won't be visible, which is fine.
                 }
             }
+            // The photos just indexed are ready for face grouping.
+            dev.twentyonevision.app.embedder.faces.FaceScanWorker.enqueueIfNeeded(applicationContext)
             Result.success()
         } catch (e: Exception) {
             // embedImages already catches per-file problems internally

@@ -66,4 +66,5 @@ model_host/*
 # =========================
 
 Thumbs.db
-desktop.ini
+desktop.ini# ...except the face detector the app ships with (bundled in assets).
+!android/app/src/main/assets/det_2.5g.onnx

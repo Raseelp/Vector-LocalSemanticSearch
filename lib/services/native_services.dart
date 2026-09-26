@@ -248,6 +248,101 @@ class NativeServices {
     return Uint8List.fromList(bytes!);
   }
 
+  // ---- Faces ----
+
+  static const _faceProgressChannel = EventChannel('twentyonevision/faceProgress');
+
+  /// Live status ticks from the face scan (also delivered while it runs in the
+  /// background). Same fields as [FaceStatus].
+  Stream<FaceStatus> faceProgress() => _faceProgressChannel
+      .receiveBroadcastStream()
+      .map((e) => FaceStatus.fromMap(e as Map<dynamic, dynamic>));
+
+  /// Starts the automatic face scan; does nothing if it is already running.
+  Future<void> startFaceScan() async {
+    await _channel.invokeMethod('startFaceScan');
+  }
+
+  /// Stops the face scan and keeps it stopped (nothing restarts it automatically).
+  Future<void> pauseFaceScan() => _channel.invokeMethod('pauseFaceScan');
+
+  /// Lets the face scan run again (and starts it if there is anything to do).
+  Future<void> resumeFaceScan() => _channel.invokeMethod('resumeFaceScan');
+
+  Future<FaceStatus> faceStatus() async {
+    final map = await _channel.invokeMapMethod<String, dynamic>('faceStatus');
+    return FaceStatus.fromMap(map!);
+  }
+
+  Future<List<Person>> listPeople({bool hidden = false}) async {
+    final list = await _channel.invokeListMethod<dynamic>('listPeople', {'hidden': hidden});
+    return (list ?? const []).map((e) => Person.fromMap(e as Map<dynamic, dynamic>)).toList();
+  }
+
+  Future<Person?> personSummary(int personId) async {
+    final map = await _channel.invokeMapMethod<String, dynamic>('personSummary', {'personId': personId});
+    return map == null ? null : Person.fromMap(map);
+  }
+
+  /// A person's photos, in the shape the search results grid reads.
+  Future<List<Map<String, dynamic>>> personPhotos(int personId) async {
+    final list = await _channel.invokeListMethod<dynamic>('personPhotos', {'personId': personId});
+    return (list ?? const []).cast<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  Future<List<PersonFace>> personFaces(int personId) async {
+    final list = await _channel.invokeListMethod<dynamic>('personFaces', {'personId': personId});
+    return (list ?? const []).map((e) => PersonFace.fromMap(e as Map<dynamic, dynamic>)).toList();
+  }
+
+  /// A square picture of one face.
+  Future<Uint8List> faceCrop(int faceId, {int size = 256}) async {
+    final bytes = await _channel.invokeMethod<List<int>>('faceCrop', {'faceId': faceId, 'size': size});
+    return Uint8List.fromList(bytes!);
+  }
+
+  Future<void> renamePerson(int personId, String? name) =>
+      _channel.invokeMethod('renamePerson', {'personId': personId, 'name': name});
+
+  Future<void> hidePerson(int personId, bool hidden) =>
+      _channel.invokeMethod('hidePerson', {'personId': personId, 'hidden': hidden});
+
+  /// Joins [otherId] into [keepId]; the name and edits carry over.
+  Future<void> mergePeople({required int keepId, required int otherId}) =>
+      _channel.invokeMethod('mergePeople', {'keepId': keepId, 'otherId': otherId});
+
+  /// Pairs of people who may be the same person, most likely first.
+  Future<List<MergeSuggestion>> suggestMerges({int limit = 20}) async {
+    final list = await _channel.invokeListMethod<dynamic>('suggestMerges', {'limit': limit});
+    return (list ?? const []).map((e) => MergeSuggestion.fromMap(e as Map<dynamic, dynamic>)).toList();
+  }
+
+  /// "These are different people": never suggested or merged automatically again.
+  Future<void> rejectMerge(int a, int b) => _channel.invokeMethod('rejectMerge', {'a': a, 'b': b});
+
+  Future<void> removeFace(int faceId) => _channel.invokeMethod('removeFace', {'faceId': faceId});
+
+  Future<void> regroupFaces() => _channel.invokeMethod('regroupFaces');
+
+  /// Forgets every face and person (names too); the next scan starts over.
+  Future<void> resetFaces() => _channel.invokeMethod('resetFaces');
+
+  Future<void> setFaceSettings({bool? thorough, bool? refine, String? strictness}) =>
+      _channel.invokeMethod('setFaceSettings', {'thorough': thorough, 'refine': refine, 'strictness': strictness});
+
+  /// Runs the one-off speed test for this phone again.
+  Future<void> retuneFaces() => _channel.invokeMethod('retuneFaces');
+
+  /// The face models found on the device (bundled or dropped into [FaceModels.dir]).
+  Future<FaceModels> faceModels() async {
+    final map = await _channel.invokeMapMethod<String, dynamic>('faceModels');
+    return FaceModels.fromMap(map!);
+  }
+
+  Future<void> selectFaceModel({required String kind, required String id}) async {
+    await _channel.invokeMethod('selectFaceModel', {'kind': kind, 'id': id});
+  }
+
   /// A small (grid/card sized) JPEG - far cheaper than [loadImageBytes],
   /// which returns a full-screen-sized image.
   Future<Uint8List> loadThumbnail({
@@ -435,4 +530,242 @@ class NativeServices {
       (event) => ModelDownloadProgress.fromMap(Map<dynamic, dynamic>.from(event)),
     );
   }
+}
+
+/// A group of faces believed to be one person.
+class Person {
+  Person({
+    required this.id,
+    required this.name,
+    required this.hidden,
+    required this.faceCount,
+    required this.photoCount,
+    required this.coverFaceId,
+  });
+
+  final int id;
+  final String? name;
+  final bool hidden;
+  final int faceCount, photoCount;
+  final int coverFaceId;
+
+  factory Person.fromMap(Map<dynamic, dynamic> m) => Person(
+        id: (m['id'] as num).toInt(),
+        name: m['name'] as String?,
+        hidden: m['hidden'] as bool? ?? false,
+        faceCount: (m['faceCount'] as num).toInt(),
+        photoCount: (m['photoCount'] as num).toInt(),
+        coverFaceId: (m['coverFaceId'] as num).toInt(),
+      );
+}
+
+/// Two people who may be one.
+class MergeSuggestion {
+  MergeSuggestion({required this.aId, required this.bId, required this.score});
+
+  final int aId, bId;
+  // How alike they look, roughly 0.3 (maybe) to 0.6 (very likely).
+  final double score;
+
+  factory MergeSuggestion.fromMap(Map<dynamic, dynamic> m) => MergeSuggestion(
+        aId: (m['a'] as num).toInt(),
+        bId: (m['b'] as num).toInt(),
+        score: (m['score'] as num).toDouble(),
+      );
+}
+
+/// One face of a person (for the review screen).
+class PersonFace {
+  PersonFace({required this.faceId, required this.good, required this.photoUri});
+
+  final int faceId;
+  // False for small / blurry / turned-away faces that weren't used to decide who the person is.
+  final bool good;
+  final String photoUri;
+
+  factory PersonFace.fromMap(Map<dynamic, dynamic> m) => PersonFace(
+        faceId: (m['faceId'] as num).toInt(),
+        good: m['good'] as bool? ?? true,
+        photoUri: m['photoUri'] as String? ?? '',
+      );
+}
+
+/// Where the automatic face scan is, plus the current totals.
+class FaceStatus {
+  FaceStatus({
+    this.running = false,
+    this.paused = false,
+    this.userPaused = false,
+    this.done = false,
+    this.phase = 'scan',
+    this.refine = true,
+    this.deferredPhotos = 0,
+    this.tuning,
+    this.processed = 0,
+    this.total = 0,
+    this.faces = 0,
+    this.people = 0,
+    this.failed = 0,
+    this.runProcessed = 0,
+    this.elapsedMs = 0,
+    this.error,
+    this.ready = true,
+    this.thorough = false,
+    this.strictness = 'balanced',
+    this.modelsDir = '',
+  });
+
+  // paused: waiting for photo indexing to finish. userPaused: stopped by the user.
+  final bool running, paused, userPaused, done;
+
+  // What the scan is doing: 'scan' (finding and recognising the clear faces),
+  // 'refine' (the small / blurry ones, afterwards) or 'tune' (a one-off speed
+  // test for this phone). While refining, processed/total count photos of that pass.
+  final String phase;
+
+  // Whether the refining pass is switched on, and how many photos still have
+  // faces waiting for it.
+  final bool refine;
+  final int deferredPhotos;
+
+  // What the speed test picked for this phone, for the options sheet.
+  final String? tuning;
+  final int processed, total, faces, people, failed, runProcessed, elapsedMs;
+  final String? error;
+  // False when no recognition model is installed.
+  final bool ready;
+  final bool thorough;
+  final String strictness;
+  final String modelsDir;
+
+  /// Photos left in the pass that is running now.
+  int get phaseRemaining => (total - processed).clamp(0, total);
+
+  /// Photos still to work on overall, including faces waiting for the refining pass.
+  int get remaining => phase == 'refine' ? phaseRemaining : phaseRemaining + (refine ? deferredPhotos : 0);
+
+  FaceStatus withUserPaused(bool value) => FaceStatus(
+        running: value ? false : running,
+        paused: paused,
+        userPaused: value,
+        done: done,
+        phase: phase,
+        refine: refine,
+        deferredPhotos: deferredPhotos,
+        tuning: tuning,
+        processed: processed,
+        total: total,
+        faces: faces,
+        people: people,
+        failed: failed,
+        runProcessed: runProcessed,
+        elapsedMs: elapsedMs,
+        error: error,
+        ready: ready,
+        thorough: thorough,
+        strictness: strictness,
+        modelsDir: modelsDir,
+      );
+
+  double? get fraction => total > 0 ? (processed / total).clamp(0.0, 1.0) : null;
+
+  /// Rough time left, from this run's pace; null until there is enough to go on.
+  Duration? get eta {
+    if (!running || paused || runProcessed < 10 || elapsedMs < 4000) return null;
+    final remaining = total - processed;
+    if (remaining <= 0) return null;
+    final perPhotoMs = elapsedMs / runProcessed;
+    return Duration(milliseconds: (perPhotoMs * remaining).round());
+  }
+
+  /// A tick from the running scan: keeps what a tick doesn't carry from [previous].
+  FaceStatus mergedOnto(FaceStatus previous) => FaceStatus(
+        running: running,
+        paused: paused,
+        userPaused: userPaused,
+        done: done,
+        phase: phase,
+        refine: previous.refine,
+        deferredPhotos: previous.deferredPhotos,
+        tuning: previous.tuning,
+        processed: processed,
+        total: total,
+        faces: faces,
+        people: people,
+        failed: failed,
+        runProcessed: runProcessed,
+        elapsedMs: elapsedMs,
+        error: error,
+        ready: error == 'no_model' ? false : previous.ready,
+        thorough: previous.thorough,
+        strictness: previous.strictness,
+        modelsDir: previous.modelsDir,
+      );
+
+  factory FaceStatus.fromMap(Map<dynamic, dynamic> m) => FaceStatus(
+        running: m['running'] as bool? ?? false,
+        paused: m['paused'] as bool? ?? false,
+        userPaused: m['userPaused'] as bool? ?? false,
+        done: m['done'] as bool? ?? false,
+        phase: m['phase'] as String? ?? 'scan',
+        refine: m['refine'] as bool? ?? true,
+        deferredPhotos: (m['deferredPhotos'] as num?)?.toInt() ?? 0,
+        tuning: m['tuning'] as String?,
+        processed: (m['processed'] as num?)?.toInt() ?? 0,
+        total: (m['total'] as num?)?.toInt() ?? 0,
+        faces: (m['faces'] as num?)?.toInt() ?? 0,
+        people: (m['people'] as num?)?.toInt() ?? 0,
+        failed: (m['failed'] as num?)?.toInt() ?? 0,
+        runProcessed: (m['runProcessed'] as num?)?.toInt() ?? 0,
+        elapsedMs: (m['elapsedMs'] as num?)?.toInt() ?? 0,
+        error: m['error'] as String?,
+        ready: m['ready'] as bool? ?? true,
+        thorough: m['thorough'] as bool? ?? false,
+        strictness: m['strictness'] as String? ?? 'balanced',
+        modelsDir: m['modelsDir'] as String? ?? '',
+      );
+}
+
+class FaceModelInfo {
+  FaceModelInfo({
+    required this.kind,
+    required this.id,
+    required this.name,
+    required this.sizeBytes,
+    required this.source,
+    required this.selected,
+  });
+
+  final String kind; // 'detector' | 'embedder'
+  final String id;
+  final String name;
+  final int sizeBytes;
+  final String source; // 'bundled' | 'device'
+  final bool selected;
+
+  factory FaceModelInfo.fromMap(Map<dynamic, dynamic> m) => FaceModelInfo(
+        kind: m['kind'] as String,
+        id: m['id'] as String,
+        name: m['name'] as String,
+        sizeBytes: (m['sizeBytes'] as num).toInt(),
+        source: m['source'] as String,
+        selected: m['selected'] as bool,
+      );
+}
+
+class FaceModels {
+  FaceModels({required this.dir, required this.models});
+
+  /// Folder on the device to drop new .onnx models into.
+  final String dir;
+  final List<FaceModelInfo> models;
+
+  List<FaceModelInfo> ofKind(String kind) => models.where((m) => m.kind == kind).toList();
+
+  factory FaceModels.fromMap(Map<dynamic, dynamic> m) => FaceModels(
+        dir: m['dir'] as String,
+        models: (m['models'] as List)
+            .map((e) => FaceModelInfo.fromMap(e as Map<dynamic, dynamic>))
+            .toList(),
+      );
 }

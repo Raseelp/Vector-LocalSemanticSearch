@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:twentyonevision/controllers/native_controller.dart';
 import 'package:twentyonevision/models/meta_data_model.dart';
+import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
 import 'package:twentyonevision/view/widget/draggable_metadata_sheet.dart';
@@ -13,11 +14,44 @@ import 'package:twentyonevision/view/widget/media_chrome_button.dart';
 import 'package:twentyonevision/view/widget/media_info_widgets.dart';
 import 'package:twentyonevision/view/widget/zoomable_image.dart';
 
-class ImageViewScreen extends StatelessWidget {
-  const ImageViewScreen({super.key, required this.imageBytes, required this.uri});
+class ImageViewScreen extends StatefulWidget {
+  const ImageViewScreen({
+    super.key,
+    required this.imageBytes,
+    required this.uri,
+    this.loadFullRes = false,
+  });
 
+  /// What to show straight away (may be only a small thumbnail).
   final Uint8List imageBytes;
   final String uri;
+
+  /// True when [imageBytes] is just a grid thumbnail: the viewer then loads
+  /// the sharp version and swaps it in.
+  final bool loadFullRes;
+
+  @override
+  State<ImageViewScreen> createState() => _ImageViewScreenState();
+}
+
+class _ImageViewScreenState extends State<ImageViewScreen> {
+  late Uint8List imageBytes = widget.imageBytes;
+  String get uri => widget.uri;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.loadFullRes) _loadSharp();
+  }
+
+  Future<void> _loadSharp() async {
+    try {
+      final sharp = await NativeServices().loadImageBytes(uri: uri, isCompressed: true);
+      if (mounted) setState(() => imageBytes = sharp);
+    } catch (_) {
+      // Keep showing the thumbnail - blurry beats blank.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

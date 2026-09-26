@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:twentyonevision/controllers/collections_controller.dart';
+import 'package:twentyonevision/controllers/faces_controller.dart';
 import 'package:twentyonevision/controllers/native_controller.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
@@ -143,6 +144,12 @@ class _HomeScreenState extends State<HomeScreen> {
                             _shrunk = false;
                           }
                           controller.setHomeTab(i);
+                          // Opening Faces: refresh, and make sure the scan is going.
+                          if (i == _tabFaces) {
+                            final faces = Get.find<FacesController>();
+                            faces.refreshAll();
+                            faces.startScan();
+                          }
                           // Search opens ready to type - once the tab is
                           // actually showing (it's offstage until then).
                           if (i == _tabSearch) {

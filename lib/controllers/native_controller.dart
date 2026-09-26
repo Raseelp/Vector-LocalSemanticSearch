@@ -8,6 +8,7 @@ import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:twentyonevision/controllers/collections_controller.dart';
+import 'package:twentyonevision/controllers/faces_controller.dart';
 import 'package:twentyonevision/db/indexed_folder_db_helper.dart';
 import 'package:twentyonevision/models/indexed_folder_model.dart';
 import 'package:twentyonevision/models/meta_data_model.dart';
@@ -753,6 +754,10 @@ class NativeController extends GetxController with WidgetsBindingObserver {
         // one reports done too, with processed short of total, and an
         // errored one reports total 0.
         final completed = scanResult.total > 0 && scanResult.processed >= scanResult.total;
+        // New photos are in the index now - the face scan picks them up.
+        if (Get.isRegistered<FacesController>()) {
+          unawaited(Get.find<FacesController>().startScan());
+        }
         if (completed) {
           scanSummary = ScanSummary(total: scanResult.total, failed: scanResult.failed);
           unawaited(_recordFailedForFolder(scanResult.id, scanResult.failed));

@@ -30,6 +30,13 @@ import dev.twentyonevision.app.embedder.ScanEngineHolder
 import dev.twentyonevision.app.embedder.ScanForegroundService
 import dev.twentyonevision.app.embedder.ScanWorker
 import dev.twentyonevision.app.embedder.VideoFrameExtractor
+import dev.twentyonevision.app.embedder.faces.FaceClusterConfig
+import dev.twentyonevision.app.embedder.faces.FaceModelKind
+import dev.twentyonevision.app.embedder.faces.FaceScanHub
+import dev.twentyonevision.app.embedder.faces.FaceScanWorker
+import dev.twentyonevision.app.embedder.faces.FaceServices
+import dev.twentyonevision.app.embedder.faces.FaceTuner
+import dev.twentyonevision.app.embedder.faces.FaceSettings
 import dev.twentyonevision.app.embedder.models.ModelManager
 import dev.twentyonevision.app.embedder.models.ModelsNotReadyException
 
@@ -37,6 +44,7 @@ class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "twentyonevision/native"
     private val PROGRESS_CHANNEL = "twentyonevision/progress"
+    private val FACE_PROGRESS_CHANNEL = "twentyonevision/faceProgress"
     private val MODEL_DOWNLOAD_CHANNEL = "twentyonevision/modelDownload"
     private val PICK_REQUEST = 2001
 
@@ -78,6 +86,25 @@ class MainActivity : FlutterActivity() {
     // Grid thumbnails only: a few in parallel so a collection's tiles fill in
     // together, and off searchExecutor so they never queue behind a search.
     private val thumbnailExecutor = Executors.newFixedThreadPool(3)
+    // Face pictures get their own threads: a grid of photo thumbnails filling in
+    // (or a search) must never make an avatar wait, and the other way round.
+    private val faceCropExecutor = Executors.newFixedThreadPool(3)
+    // Face detection has its own thread and detector (with its own ONNX
+    // session), so it never waits behind - or holds up - search or a scan.
+    private val faceExecutor = Executors.newSingleThreadExecutor()
+    private val faces by lazy { FaceServices.get(applicationContext) }
+
+    // Runs [block] on the face thread and hands its value (or its error) to Flutter.
+    private fun faceTask(result: MethodChannel.Result, block: () -> Any?) {
+        faceExecutor.execute {
+            try {
+                val value = block()
+                runOnUiThread { result.success(value) }
+            } catch (e: Throwable) {
+                runOnUiThread { result.error("FACE_FAILED", e.message ?: e.toString(), null) }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -650,6 +677,237 @@ class MainActivity : FlutterActivity() {
                 // full-screen view gets): decoding + re-encoding a huge bitmap
                 // per tile was the slow part of a collection filling in. Runs
                 // on a small pool so several decode at once.
+                // ---- Faces ----
+                // Everything below runs on faceExecutor (crops on the
+                // thumbnail pool) so it never waits behind search or a scan.
+
+                // Starts the automatic face scan (a no-op if it is already
+                // running - unique work). Called on launch, when the Faces
+                // tab opens, and after indexing finishes.
+                "startFaceScan" -> faceTask(result) {
+                    // Not while indexing runs (they'd compete; indexing starts
+                    // it when it finishes) and only when there is something to do.
+                    if (ScanForegroundService.isScanActive) false
+                    else FaceScanWorker.enqueueIfNeeded(applicationContext)
+                }
+
+                "faceStatus" -> faceTask(result) {
+                    val (photos, faceCount, people) = faces.store.stats()
+                    val hub = FaceScanHub.last
+                    mapOf(
+                        "photos" to photos,
+                        "faces" to faceCount,
+                        "people" to people,
+                        "running" to FaceScanHub.running,
+                        "paused" to (hub?.get("paused") == true && FaceScanHub.running),
+                        "userPaused" to FaceSettings.paused(applicationContext),
+                        "processed" to photos,
+                        "total" to ScanEngineHolder.embeddingEngine(applicationContext).indexedImages().size,
+                        "failed" to (hub?.get("failed") ?: 0),
+                        "runProcessed" to (hub?.get("runProcessed") ?: 0),
+                        "elapsedMs" to (hub?.get("elapsedMs") ?: 0L),
+                        "error" to hub?.get("error"),
+                        "ready" to faces.engine.isReady(),
+                        "thorough" to FaceSettings.thorough(applicationContext),
+                        "refine" to FaceSettings.refine(applicationContext),
+                        "deferredPhotos" to faces.store.deferredPhotoCount(),
+                        "tuning" to FaceTuner.summary(applicationContext, faces.engine.store),
+                        "strictness" to faces.clusterer.strictness(),
+                        "modelsDir" to faces.engine.store.modelsDir.absolutePath,
+                    )
+                }
+
+                // The user's own stop / go for the scan. Stopping is remembered, so
+                // the automatic start leaves it alone until they resume.
+                "pauseFaceScan" -> faceTask(result) {
+                    FaceSettings.setPaused(applicationContext, true)
+                    WorkManager.getInstance(applicationContext).cancelUniqueWork(FaceScanWorker.UNIQUE_WORK_NAME)
+                    true
+                }
+
+                "resumeFaceScan" -> faceTask(result) {
+                    FaceSettings.setPaused(applicationContext, false)
+                    FaceScanWorker.enqueueIfNeeded(applicationContext)
+                }
+
+                // Run the one-off speed test for this phone again.
+                "retuneFaces" -> faceTask(result) {
+                    WorkManager.getInstance(applicationContext).cancelUniqueWork(FaceScanWorker.UNIQUE_WORK_NAME)
+                    FaceTuner.reset(applicationContext)
+                    FaceScanWorker.enqueueIfNeeded(applicationContext)
+                }
+
+                "listPeople" -> faceTask(result) {
+                    val hidden = call.argument<Boolean>("hidden") ?: false
+                    faces.store.listPeople(hidden).map { p ->
+                        mapOf(
+                            "id" to p.id,
+                            "name" to p.name,
+                            "hidden" to p.hidden,
+                            "faceCount" to p.faceCount,
+                            "photoCount" to p.photoCount,
+                            "coverFaceId" to p.coverFaceId,
+                        )
+                    }
+                }
+
+                "personSummary" -> faceTask(result) {
+                    val id = (call.argument<Number>("personId") ?: 0).toLong()
+                    faces.store.personSummary(id)?.let { p ->
+                        mapOf(
+                            "id" to p.id,
+                            "name" to p.name,
+                            "hidden" to p.hidden,
+                            "faceCount" to p.faceCount,
+                            "photoCount" to p.photoCount,
+                            "coverFaceId" to p.coverFaceId,
+                        )
+                    }
+                }
+
+                // Photos in the shape the search results grid already reads.
+                "personPhotos" -> faceTask(result) {
+                    val id = (call.argument<Number>("personId") ?: 0).toLong()
+                    faces.store.personPhotos(id).map { (uri, _) ->
+                        mapOf(
+                            "path" to uri,
+                            "score" to 1.0,
+                            "isVideo" to false,
+                            "videoUri" to "",
+                            "timestampMs" to 0L,
+                        )
+                    }
+                }
+
+                "personFaces" -> faceTask(result) {
+                    val id = (call.argument<Number>("personId") ?: 0).toLong()
+                    faces.store.personFaces(id).map { f ->
+                        mapOf("faceId" to f.faceId, "good" to f.good, "photoUri" to f.photoUri)
+                    }
+                }
+
+                "faceCrop" -> {
+                    val faceId = (call.argument<Number>("faceId") ?: 0).toLong()
+                    val size = (call.argument<Number>("size") ?: 256).toInt()
+                    faceCropExecutor.execute {
+                        try {
+                            val bytes = faces.crops.crop(faceId, size)
+                            runOnUiThread {
+                                if (bytes == null) result.error("NO_CROP", "Face not found", null)
+                                else result.success(bytes)
+                            }
+                        } catch (e: Throwable) {
+                            runOnUiThread { result.error("CROP_FAILED", e.message ?: e.toString(), null) }
+                        }
+                    }
+                }
+
+                "renamePerson" -> faceTask(result) {
+                    faces.clusterer.rename(
+                        (call.argument<Number>("personId") ?: 0).toLong(),
+                        call.argument<String>("name"),
+                    )
+                    true
+                }
+
+                "hidePerson" -> faceTask(result) {
+                    faces.clusterer.setHidden(
+                        (call.argument<Number>("personId") ?: 0).toLong(),
+                        call.argument<Boolean>("hidden") ?: true,
+                    )
+                    true
+                }
+
+                "mergePeople" -> faceTask(result) {
+                    faces.clusterer.merge(
+                        (call.argument<Number>("keepId") ?: 0).toLong(),
+                        (call.argument<Number>("otherId") ?: 0).toLong(),
+                    )
+                    true
+                }
+
+                // Pairs of people who may be the same person, most likely first.
+                "suggestMerges" -> faceTask(result) {
+                    val limit = (call.argument<Number>("limit") ?: 20).toInt()
+                    faces.clusterer.suggestMerges(limit).map {
+                        mapOf("a" to it.aId, "b" to it.bId, "score" to it.score.toDouble())
+                    }
+                }
+
+                "rejectMerge" -> faceTask(result) {
+                    faces.clusterer.rejectMerge(
+                        (call.argument<Number>("a") ?: 0).toLong(),
+                        (call.argument<Number>("b") ?: 0).toLong(),
+                    )
+                    true
+                }
+
+                "removeFace" -> faceTask(result) {
+                    faces.clusterer.removeFace((call.argument<Number>("faceId") ?: 0).toLong())
+                    true
+                }
+
+                // Rebuild the automatic groups with the current strictness.
+                "regroupFaces" -> faceTask(result) {
+                    faces.clusterer.regroup()
+                    true
+                }
+
+                // Forget every face and person (including names) and search all photos again.
+                "resetFaces" -> faceTask(result) {
+                    // Stop a running scan first so it doesn't write into the fresh start.
+                    WorkManager.getInstance(applicationContext).cancelUniqueWork(FaceScanWorker.UNIQUE_WORK_NAME)
+                    // Asking to start over is asking for it to run.
+                    FaceSettings.setPaused(applicationContext, false)
+                    faces.store.wipeAll()
+                    faces.clusterer.invalidate()
+                    true
+                }
+
+                "setFaceSettings" -> faceTask(result) {
+                    call.argument<Boolean>("thorough")?.let { FaceSettings.setThorough(applicationContext, it) }
+                    call.argument<Boolean>("refine")?.let {
+                        FaceSettings.setRefine(applicationContext, it)
+                        // Turning it on has work to do right away.
+                        if (it) FaceScanWorker.enqueueIfNeeded(applicationContext)
+                    }
+                    call.argument<String>("strictness")?.let {
+                        if (it in listOf(FaceClusterConfig.STRICT, FaceClusterConfig.BALANCED, FaceClusterConfig.LOOSE)) {
+                            faces.clusterer.setStrictness(it)
+                        }
+                    }
+                    true
+                }
+
+                // The face models found on the device and which are in use.
+                "faceModels" -> faceTask(result) {
+                    val store = faces.engine.store
+                    val models = FaceModelKind.values().flatMap { kind ->
+                        val chosen = store.selected(kind)?.spec?.id
+                        store.available(kind).map { m ->
+                            mapOf(
+                                "kind" to kind.name.lowercase(),
+                                "id" to m.spec.id,
+                                "name" to m.spec.displayName,
+                                "sizeBytes" to m.sizeBytes,
+                                "source" to m.source,
+                                "selected" to (m.spec.id == chosen),
+                            )
+                        }
+                    }
+                    mapOf("dir" to store.modelsDir.absolutePath, "models" to models)
+                }
+
+                "selectFaceModel" -> faceTask(result) {
+                    val kind = call.argument<String>("kind") ?: throw IllegalArgumentException("kind required")
+                    val id = call.argument<String>("id") ?: throw IllegalArgumentException("id required")
+                    // A running scan must not carry on with the other model.
+                    WorkManager.getInstance(applicationContext).cancelUniqueWork(FaceScanWorker.UNIQUE_WORK_NAME)
+                    FaceSettings.setPaused(applicationContext, false)
+                    faces.engine.store.select(FaceModelKind.valueOf(kind.uppercase()), id)
+                    true
+                }
+
                 "loadThumbnail" -> {
                     val uriString   = call.argument<String>("uri")
                     val isVideo     = call.argument<Boolean>("isVideo") ?: false
@@ -980,6 +1238,18 @@ class MainActivity : FlutterActivity() {
             }
             override fun onCancel(arguments: Any?) {
                 ScanForegroundService.setProgressSink(null)
+            }
+        })
+
+        EventChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            FACE_PROGRESS_CHANNEL
+        ).setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                FaceScanHub.sink = events
+            }
+            override fun onCancel(arguments: Any?) {
+                FaceScanHub.sink = null
             }
         })
 

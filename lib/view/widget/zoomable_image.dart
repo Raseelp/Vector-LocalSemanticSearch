@@ -35,6 +35,18 @@ class _ZoomableImageState extends State<ZoomableImage> with SingleTickerProvider
   bool _showZoomPill = false;
   Timer? _hidePillTimer;
 
+  // When the photo is swapped for a sharper one (a thumbnail first, the real
+  // thing a moment later), the old one stays underneath while the new one is
+  // decoded and then fades in over it - so there is never a blank frame or a
+  // jump between the two.
+  Uint8List? _underlay;
+
+  @override
+  void didUpdateWidget(covariant ZoomableImage old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.imageBytes, widget.imageBytes)) _underlay = old.imageBytes;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -114,7 +126,32 @@ class _ZoomableImageState extends State<ZoomableImage> with SingleTickerProvider
               transformationController: _transformController,
               minScale: _minScale,
               maxScale: _maxScale,
-              child: Image.memory(widget.imageBytes, fit: BoxFit.contain),
+              child: SizedBox.expand(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (_underlay != null)
+                      Image.memory(_underlay!, fit: BoxFit.contain, gaplessPlayback: true),
+                    Image.memory(
+                      widget.imageBytes,
+                      fit: BoxFit.contain,
+                      gaplessPlayback: true,
+                      // Already in memory: show at once. Otherwise fade in when the
+                      // first frame is ready (nothing shows until then, so the
+                      // underlay stays visible).
+                      frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                        if (wasSynchronouslyLoaded || _underlay == null) return child;
+                        return AnimatedOpacity(
+                          opacity: frame == null ? 0 : 1,
+                          duration: const Duration(milliseconds: 260),
+                          curve: Curves.easeOut,
+                          child: child,
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ),
