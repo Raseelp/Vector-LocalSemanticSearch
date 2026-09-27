@@ -5,6 +5,7 @@ import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
 import 'package:twentyonevision/view/widget/face_widgets.dart';
+import 'package:twentyonevision/view/widget/media_tray.dart';
 
 /// The small button in the video's controls: a face and how many people are in the video.
 /// Tapping it opens the [VideoPeoplePanel]. When [pulse] changes (a scan just finished, or
@@ -148,48 +149,33 @@ class VideoPeoplePanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
 
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
-      builder: (context, t, child) => Opacity(
-        opacity: t,
-        child: Transform.translate(offset: Offset(0, 14 * (1 - t)), child: child),
-      ),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(0, AppSpacing.md, 0, AppSpacing.md),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.78),
-          borderRadius: BorderRadius.circular(AppRadius.xl),
-          border: Border.all(color: const Color(0xFF5FE0CF).withValues(alpha: 0.28)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
+    return MediaTray(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
+            child: Text(
+              people.length == 1 ? 'In this $noun' : '${people.length} people in this $noun',
+              style: textTheme.labelMedium?.copyWith(color: Colors.white.withValues(alpha: 0.75)),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          SizedBox(
+            height: 98,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
-              child: Text(
-                people.length == 1 ? 'In this $noun' : '${people.length} people in this $noun',
-                style: textTheme.labelMedium?.copyWith(color: Colors.white.withValues(alpha: 0.75)),
-              ),
+              itemCount: people.length,
+              separatorBuilder: (_, __) => const SizedBox(width: AppSpacing.md),
+              itemBuilder: (context, i) {
+                final p = people[i];
+                return _PanelFace(person: p, focused: p.person.id == focusedId, onTap: (rect) => onTap(p, rect));
+              },
             ),
-            const SizedBox(height: AppSpacing.sm),
-            SizedBox(
-              height: 98,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
-                itemCount: people.length,
-                separatorBuilder: (_, __) => const SizedBox(width: AppSpacing.md),
-                itemBuilder: (context, i) {
-                  final p = people[i];
-                  return _PanelFace(person: p, focused: p.person.id == focusedId, onTap: (rect) => onTap(p, rect));
-                },
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -229,6 +215,9 @@ class _PanelFace extends StatelessWidget {
                     color: focused ? const Color(0xFF5FE0CF) : Colors.white.withValues(alpha: 0.18),
                     width: focused ? 2.5 : 1.2,
                   ),
+                  boxShadow: focused
+                      ? [BoxShadow(color: const Color(0xFF5FE0CF).withValues(alpha: 0.45), blurRadius: 12, spreadRadius: 1)]
+                      : null,
                 ),
                 child: FaceAvatar(faceId: person.person.coverFaceId, size: _size),
               ),

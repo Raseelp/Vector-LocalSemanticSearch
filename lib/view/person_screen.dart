@@ -47,8 +47,6 @@ class _PersonScreenState extends State<PersonScreen> {
     if (name != null) _faces.rename(person, name);
   }
 
-  void _menu(Person person) => showPersonMenu(context, _faces, person);
-
   @override
   Widget build(BuildContext context) {
     return GetBuilder<FacesController>(
@@ -82,11 +80,8 @@ class _PersonScreenState extends State<PersonScreen> {
                           icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18, color: AppColors.ink),
                           onPressed: () => Navigator.of(context).pop(),
                         ),
-                        const Spacer(),
-                        IconButton(
-                          icon: const Icon(Icons.more_horiz_rounded, color: AppColors.ink),
-                          onPressed: () => _menu(shown),
-                        ),
+                        // No more "⋯" here - Merge, Split, Together, Review and Hide are the
+                        // buttons floating round the photo below, not hidden behind a tap.
                       ],
                     ),
                   ),
@@ -94,7 +89,7 @@ class _PersonScreenState extends State<PersonScreen> {
                 SliverToBoxAdapter(
                   child: Column(
                     children: [
-                      FaceAvatar(faceId: shown.coverFaceId, size: 104),
+                      PersonHeadActions(faces: _faces, person: shown, size: 104),
                       const SizedBox(height: AppSpacing.md),
                       InkWell(
                         onTap: () => _rename(shown),

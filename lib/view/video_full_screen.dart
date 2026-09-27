@@ -9,6 +9,7 @@ import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
+import 'package:twentyonevision/view/image_full_screen.dart';
 import 'package:twentyonevision/view/person_screen.dart';
 import 'package:twentyonevision/view/widget/draggable_metadata_sheet.dart';
 import 'package:twentyonevision/view/widget/face_widgets.dart';
@@ -17,6 +18,7 @@ import 'package:twentyonevision/view/widget/media_actions_sheet.dart';
 import 'package:twentyonevision/view/widget/media_chrome_button.dart';
 import 'package:twentyonevision/view/widget/media_info_widgets.dart';
 import 'package:twentyonevision/view/widget/photo_faces_layer.dart';
+import 'package:twentyonevision/view/widget/similar_items_bar.dart';
 import 'package:twentyonevision/view/widget/video_people_strip.dart';
 import 'package:video_player/video_player.dart';
 
@@ -86,6 +88,10 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
   List<VideoPerson> _people = const [];
   int? _focusPerson;
   bool _peopleOpen = false; // the panel opened from the People button
+
+  // ---- "Similar to this": the strip opened once a frame has been picked ----
+  bool _similarOpen = false;
+  int? _similarFrameMs; // the frame the strip (and "search with this" below it) is for
 
   // ---- scanning the whole video (when the user asks) while it plays ----
   // 'needs' (not scanned yet), 'done', 'unavailable' (not indexed / models not ready), or
@@ -666,7 +672,7 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
   // "Search with this" for video: unlike a photo there's no single image to
   // use, so this pauses and turns the playback bar into a proper scrubber -
   // the user picks whichever moment they want, then confirms. See
-  // _confirmFrameSearch.
+  // _showSimilarForFrame.
   void _enterFramePicking(NativeController nativeController) {
     nativeController.hideMetadata();
     _controller.pause();
@@ -674,6 +680,10 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
       _pickingFrame = true;
       _showControls = true;
       _peopleOpen = false;
+      if (_similarOpen) {
+        _similarOpen = false;
+        nativeController.clearSimilar();
+      }
     });
   }
 
@@ -681,14 +691,78 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
     setState(() => _pickingFrame = false);
   }
 
-  void _confirmFrameSearch(NativeController nativeController) {
+  // The frame is picked: rather than jumping straight to a full results screen, show the
+  // "similar to this" strip for it - _confirmFrameSearch (the strip's own "search with this"
+  // button) is still there for whoever wants the full results.
+  void _showSimilarForFrame(NativeController nativeController) {
     final positionMs = _controller.value.position.inMilliseconds;
+    setState(() {
+      _pickingFrame = false;
+      _similarOpen = true;
+      _similarFrameMs = positionMs;
+    });
+    nativeController.loadSimilar(uri: widget.videoUri, timestampMs: positionMs);
+  }
+
+  void _closeSimilar(NativeController nativeController) {
+    setState(() => _similarOpen = false);
+    nativeController.clearSimilar();
+  }
+
+  void _confirmFrameSearch(NativeController nativeController) {
+    final positionMs = _similarFrameMs ?? _controller.value.position.inMilliseconds;
     // All the way back to the home screen (this may have been opened from
     // inside a collection, not straight from the results), on the Search
     // tab, then search - not awaited, the results grid shows its own
     // loading state.
     Navigator.of(context).popUntil((route) => route.isFirst);
     nativeController.searchWithVideoFrame(uri: widget.videoUri, timestampMs: positionMs);
+  }
+
+  // How long the strip takes to fade away, here and in build()'s AnimatedSwitcher - shared so
+  // the two always agree, since _openSimilarItem below times the navigation off this same value.
+  static const _similarCloseDuration = Duration(milliseconds: 200);
+
+  // A tile in the "similar to this" strip: SimilarItemsBar only wires a tile's tap up once its
+  // thumbnail has actually arrived, but bytes stays nullable here to match its callback type.
+  void _openSimilarItem(Map<String, dynamic> item, Uint8List? bytes) {
+    if (bytes == null) return;
+    final itemUri = item['path'] as String;
+    final isVideo = item['isVideo'] as bool? ?? false;
+    final timestampMs = (item['timestampMs'] as num?)?.toInt() ?? 0;
+
+    void push() {
+      if (isVideo) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => VideoViewScreen(videoUri: itemUri, timestampMs: timestampMs, thumbnailBytes: bytes),
+          ),
+        );
+      } else {
+        // Plain Navigator, not Get.to: Get.to's default preventDuplicates treats pushing the
+        // same widget type as "already here" and quietly does nothing, which would only ever
+        // bite for VideoViewScreen -> VideoViewScreen - not this branch - but Navigator.push
+        // has no such trap either way, so it's the one to use consistently here too.
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => ImageViewScreen(imageBytes: bytes, uri: itemUri, loadFullRes: true),
+          ),
+        );
+      }
+    }
+
+    if (_similarOpen) {
+      // Closed first, not left open behind the new screen - see the same note in
+      // image_full_screen.dart's _openSimilarItem for why that matters (the shared cache on
+      // the controller can end up holding another screen's results by the time this one's
+      // visible again).
+      setState(() => _similarOpen = false);
+      Future.delayed(_similarCloseDuration, () {
+        if (mounted) push();
+      });
+    } else {
+      push();
+    }
   }
 
   String _formatDuration(Duration d) {
@@ -716,6 +790,8 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
               onTap: () {
                 if (_peopleOpen) {
                   setState(() => _peopleOpen = false);
+                } else if (_similarOpen) {
+                  _closeSimilar(nativeController);
                 } else if (_selectedFace != null) {
                   setState(() => _selectedFace = null);
                 } else {
@@ -847,15 +923,22 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
                                           const SizedBox(width: AppSpacing.sm),
                                         ],
                                         MediaChromeButton(
-                                          icon: _pickingFrame
+                                          icon: (_pickingFrame || _similarOpen)
                                               ? Icons.image_search
                                               : Icons.image_search_rounded,
                                           tooltip: _pickingFrame
                                               ? 'Cancel frame search'
-                                              : 'Search with a frame from this video',
-                                          onTap: () => _pickingFrame
-                                              ? _cancelFramePicking()
-                                              : _enterFramePicking(nativeController),
+                                              : (_similarOpen ? 'Hide similar' : 'Search with a frame from this video'),
+                                          active: _similarOpen,
+                                          onTap: () {
+                                            if (_pickingFrame) {
+                                              _cancelFramePicking();
+                                            } else if (_similarOpen) {
+                                              _closeSimilar(nativeController);
+                                            } else {
+                                              _enterFramePicking(nativeController);
+                                            }
+                                          },
                                         ),
                                         const SizedBox(width: AppSpacing.sm),
                                         MediaChromeButton(
@@ -892,7 +975,7 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
                                 controller: _controller,
                                 formatDuration: _formatDuration,
                                 onCancel: _cancelFramePicking,
-                                onSearch: () => _confirmFrameSearch(nativeController),
+                                onSearch: () => _showSimilarForFrame(nativeController),
                               ),
 
                             if (ready && !_pickingFrame)
@@ -907,7 +990,13 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
                                   _autoSelect = null;
                                   _controller.value.isPlaying ? _controller.pause() : _controller.play();
                                 },
-                                onPeople: () => setState(() => _peopleOpen = !_peopleOpen),
+                                onPeople: () => setState(() {
+                                  _peopleOpen = !_peopleOpen;
+                                  if (_peopleOpen && _similarOpen) {
+                                    _similarOpen = false;
+                                    nativeController.clearSimilar();
+                                  }
+                                }),
                               ),
                           ],
                         ),
@@ -934,6 +1023,32 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
                       right: AppSpacing.base,
                       bottom: MediaQuery.of(context).padding.bottom + 112,
                       child: VideoPeoplePanel(people: _people, focusedId: _focusPerson, onTap: _jumpToPerson),
+                    ),
+
+                  // "Similar to this frame": shown once a frame has been picked, above the
+                  // controls bar the same way the people panel is. AnimatedSwitcher rather than
+                  // gating the whole Positioned on _similarOpen: closing (by hand, or
+                  // automatically before _openSimilarItem navigates away) fades it out instead
+                  // of cutting it off dead.
+                  if (ready && _showControls)
+                    Positioned(
+                      left: AppSpacing.base,
+                      right: AppSpacing.base,
+                      bottom: MediaQuery.of(context).padding.bottom + 112,
+                      child: AnimatedSwitcher(
+                        duration: _similarCloseDuration,
+                        child: _similarOpen
+                            ? SimilarItemsBar(
+                                key: const ValueKey('similar-open'),
+                                items: nativeController.similarResults,
+                                bytesFor: (item) => nativeController.similarThumbCache[nativeController.cacheKeyForResult(item)],
+                                loading: nativeController.isLoadingSimilar,
+                                label: 'Similar to this frame',
+                                onTapItem: (item, bytes) => _openSimilarItem(item, bytes),
+                                onSearchFull: () => _confirmFrameSearch(nativeController),
+                              )
+                            : const SizedBox.shrink(key: ValueKey('similar-closed')),
+                      ),
                     ),
 
                   // Their face, flying from the panel to their head while the video jumps there.
@@ -1018,7 +1133,7 @@ class _FramePickHint extends StatelessWidget {
             Icon(Icons.swipe_rounded, color: Colors.white, size: 16),
             SizedBox(width: AppSpacing.sm),
             Text(
-              'Drag the bar to any moment, then search it',
+              'Drag the bar to any moment, then see what looks similar',
               style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
             ),
           ],
@@ -1123,7 +1238,7 @@ class _FramePickBarState extends State<_FramePickBar> {
                       Icon(Icons.image_search_rounded, color: AppColors.onPrimary, size: 18),
                       SizedBox(width: AppSpacing.sm),
                       Text(
-                        'Search this frame',
+                        'Show similar',
                         style: TextStyle(
                           color: AppColors.onPrimary,
                           fontWeight: FontWeight.w600,

@@ -9,12 +9,14 @@ import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
 import 'package:twentyonevision/view/person_screen.dart';
+import 'package:twentyonevision/view/video_full_screen.dart';
 import 'package:twentyonevision/view/widget/draggable_metadata_sheet.dart';
 import 'package:twentyonevision/view/widget/match_strength_bars.dart';
 import 'package:twentyonevision/view/widget/media_actions_sheet.dart';
 import 'package:twentyonevision/view/widget/media_chrome_button.dart';
 import 'package:twentyonevision/view/widget/media_info_widgets.dart';
 import 'package:twentyonevision/view/widget/photo_faces_layer.dart';
+import 'package:twentyonevision/view/widget/similar_items_bar.dart';
 import 'package:twentyonevision/view/widget/video_people_strip.dart';
 import 'package:twentyonevision/view/widget/zoomable_image.dart';
 
@@ -68,6 +70,9 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
   // ---- the People button: everyone recognised in this photo, in a panel ----
   final GlobalKey<ZoomableImageState> _zoomKey = GlobalKey<ZoomableImageState>();
   bool _peopleOpen = false;
+
+  // ---- "Similar to this": the strip opened from the search-with-image button ----
+  bool _similarOpen = false;
   int _peoplePulse = 0; // bumped to make the button draw the eye (a scan just found people)
   bool _sawGlow = false; // the scan took long enough to show the glow
   int? _pointedPerson;
@@ -187,6 +192,54 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
     if (mounted) _loadFaces();
   }
 
+  // How long the strip takes to fade away, here and in build()'s AnimatedSwitcher - shared so
+  // the two always agree, since _openSimilarItem below times the navigation off this same value.
+  static const _similarCloseDuration = Duration(milliseconds: 200);
+
+  // A tile in the "similar to this" strip: SimilarItemsBar only wires a tile's tap up once its
+  // thumbnail has actually arrived, but bytes stays nullable here to match its callback type.
+  void _openSimilarItem(Map<String, dynamic> item, Uint8List? bytes) {
+    if (bytes == null) return;
+    final itemUri = item['path'] as String;
+    final isVideo = item['isVideo'] as bool? ?? false;
+    final timestampMs = (item['timestampMs'] as num?)?.toInt() ?? 0;
+
+    void push() {
+      if (isVideo) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => VideoViewScreen(videoUri: itemUri, timestampMs: timestampMs, thumbnailBytes: bytes),
+          ),
+        );
+      } else {
+        // Plain Navigator, not Get.to: this can be opened from inside another ImageViewScreen
+        // (a similar photo, tapped from a photo's own viewer), and Get.to's default
+        // preventDuplicates treats pushing the same widget type as "already here" and quietly
+        // does nothing - only a problem for same-type navigation, which is exactly this case.
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            // Only a small grid-sized thumbnail was loaded for the strip - the viewer loads the sharp photo itself.
+            builder: (_) => ImageViewScreen(imageBytes: bytes, uri: itemUri, loadFullRes: true),
+          ),
+        );
+      }
+    }
+
+    if (_similarOpen) {
+      // Closed first, not left open behind the new screen: coming back here later would
+      // otherwise still show whatever the strip was last showing - possibly overwritten by
+      // then with another screen's results for a different photo entirely (they share one
+      // cache on the controller). Letting it fade out before the push means the close reads
+      // as deliberate, not as something that got cut off by the navigation.
+      setState(() => _similarOpen = false);
+      Future.delayed(_similarCloseDuration, () {
+        if (mounted) push();
+      });
+    } else {
+      push();
+    }
+  }
+
   Future<void> _loadSharp() async {
     try {
       final sharp = await NativeServices().loadImageBytes(
@@ -231,6 +284,9 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
                       onSingleTap: () {
                         if (_peopleOpen) {
                           setState(() => _peopleOpen = false);
+                        } else if (_similarOpen) {
+                          setState(() => _similarOpen = false);
+                          controller.clearSimilar();
                         } else {
                           controller.hideMetadata();
                         }
@@ -264,10 +320,46 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
                         count: _people.length,
                         pulse: _peoplePulse,
                         open: _peopleOpen,
-                        onTap: () => setState(() => _peopleOpen = !_peopleOpen),
+                        onTap: () => setState(() {
+                          _peopleOpen = !_peopleOpen;
+                          if (_peopleOpen && _similarOpen) {
+                            _similarOpen = false;
+                            controller.clearSimilar();
+                          }
+                        }),
                       ),
                     ),
                   ],
+
+                  // "Similar to this": up to ten close matches, right here instead of a full
+                  // search screen - out of the way while the details are up, same as the people panel.
+                  // AnimatedSwitcher rather than an if(): closing (by hand, or automatically before
+                  // _openSimilarItem navigates away) fades it out instead of cutting it off dead.
+                  Positioned(
+                    left: AppSpacing.base,
+                    right: AppSpacing.base,
+                    bottom: MediaQuery.of(context).padding.bottom + 84,
+                    child: AnimatedSwitcher(
+                      duration: _similarCloseDuration,
+                      child: (_similarOpen && !controller.showMetadata)
+                          ? SimilarItemsBar(
+                              key: const ValueKey('similar-open'),
+                              items: controller.similarResults,
+                              bytesFor: (item) => controller.similarThumbCache[controller.cacheKeyForResult(item)],
+                              loading: controller.isLoadingSimilar,
+                              // Not "similar photos" - this can turn up videos too, same as the
+                              // search this button falls back to.
+                              label: 'Similar to this photo',
+                              onTapItem: (item, bytes) => _openSimilarItem(item, bytes),
+                              onSearchFull: () {
+                                setState(() => _similarOpen = false);
+                                Get.until((route) => route.isFirst);
+                                controller.searchWithImage(uri: uri, bytes: imageBytes);
+                              },
+                            )
+                          : const SizedBox.shrink(key: ValueKey('similar-closed')),
+                    ),
+                  ),
 
                   // Their face, flying from the panel to their head.
                   if (_flight != null)
@@ -321,19 +413,18 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
                     child: Row(
                       children: [
                         MediaChromeButton(
-                          icon: Icons.image_search_rounded,
-                          tooltip: 'Search with this image',
-                          onTap: () {
-                            // All the way back to the home screen (this may have been
-                            // opened from inside a collection, not straight from
-                            // the results), on the Search tab, then search - not
-                            // awaited, the results grid shows its own loading state.
-                            Get.until((route) => route.isFirst);
-                            controller.searchWithImage(
-                              uri: uri,
-                              bytes: imageBytes,
-                            );
-                          },
+                          icon: _similarOpen ? Icons.image_search : Icons.image_search_rounded,
+                          tooltip: _similarOpen ? 'Hide similar photos' : 'Similar to this photo',
+                          active: _similarOpen,
+                          onTap: () => setState(() {
+                            _similarOpen = !_similarOpen;
+                            if (_similarOpen) {
+                              if (_peopleOpen) _peopleOpen = false;
+                              controller.loadSimilar(uri: uri);
+                            } else {
+                              controller.clearSimilar();
+                            }
+                          }),
                         ),
                         const SizedBox(width: AppSpacing.sm),
                         MediaChromeButton(

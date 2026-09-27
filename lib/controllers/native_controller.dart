@@ -254,6 +254,15 @@ class NativeController extends GetxController with WidgetsBindingObserver {
   // content words in it).
   List<MapEntry<String, double>> matchExplanation = [];
 
+  // "Similar to this" - the small strip shown from the viewer instead of
+  // running the full search straight away. Its own list and thumbnail
+  // cache, separate from searchResults/imageCache above, since those
+  // represent a different (and much larger) result set that a real search
+  // would clear and replace. See loadSimilar.
+  List<Map<String, dynamic>> similarResults = [];
+  final Map<String, Uint8List> similarThumbCache = {};
+  bool isLoadingSimilar = false;
+
   late StreamSubscription<Map<String, dynamic>> _progressSub;
   IndexedFolder scanResult = IndexedFolder.empty();
 
@@ -511,6 +520,101 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     update();
 
     await runSearch();
+  }
+
+  // "Similar to this" - the same embedding search behind searchWithImage/
+  // searchWithVideoFrame, but for a quick strip of ~10 results shown right
+  // in the viewer instead of a full results screen. [timestampMs] set means
+  // the seed is one frame of a video, same convention as above.
+  //
+  // The native side scores every stored embedding regardless of topK, so
+  // asking for a small number costs nothing extra - the +3 over the 10 we
+  // actually want just covers dropping the seed itself (it always comes
+  // back as its own best match) without a second round trip.
+  //
+  // Guarded by _similarToken: this is shared, single-instance state, and
+  // nothing stops two calls overlapping - closing the strip while a fetch
+  // is still in flight (clearSimilar), or opening it again for a different
+  // photo before the first fetch finished. Without a token, whichever call
+  // happens to resolve last would win regardless of which one is actually
+  // still wanted, silently repopulating results for a photo the viewer has
+  // already moved on from.
+  int _similarToken = 0;
+
+  Future<void> loadSimilar({required String uri, int? timestampMs}) async {
+    final token = ++_similarToken;
+    similarResults = [];
+    similarThumbCache.clear();
+    isLoadingSimilar = true;
+    update();
+
+    try {
+      final raw = timestampMs != null
+          ? await NativeServices().searchByVideoFrame(
+              uri: uri,
+              timestampMs: timestampMs,
+              limit: 13,
+              contentMode: ContentMode.both,
+            )
+          : await NativeServices().searchByImage(uri: uri, limit: 13, contentMode: ContentMode.both);
+      if (token != _similarToken) return; // superseded while the search was in flight
+
+      similarResults = raw.where((item) => (item['path'] as String?) != uri).take(10).toList();
+      update();
+
+      // Small and fast (grid-sized thumbnails, not full images) - loaded a
+      // few at a time so the strip fills in rather than waiting on all ten.
+      // update() rebuilds this whole viewer screen (the same one GetBuilder
+      // covers everything else on it too), so - same as openPerson's own
+      // thumbnail workers in faces_controller.dart - it's batched rather
+      // than called after every single thumbnail, which for ten quick
+      // fetches would otherwise mean up to ten extra full-screen rebuilds
+      // stacked on top of whatever else is animating (the badge, playback).
+      const workers = 3;
+      var next = 0;
+      var sinceUpdate = 0;
+      Future<void> worker() async {
+        while (true) {
+          if (token != _similarToken) return;
+          final i = next++;
+          if (i >= similarResults.length) return;
+          final item = similarResults[i];
+          try {
+            final bytes = await NativeServices().loadThumbnail(
+              uri: item['path'] as String,
+              isVideo: item['isVideo'] as bool? ?? false,
+              timestampMs: (item['timestampMs'] as num?)?.toInt() ?? 0,
+              size: 300,
+            );
+            if (token != _similarToken) return;
+            similarThumbCache[cacheKeyForResult(item)] = bytes;
+          } catch (_) {}
+          if (token == _similarToken && ++sinceUpdate >= 3) {
+            sinceUpdate = 0;
+            update();
+          }
+        }
+      }
+
+      await Future.wait([for (var i = 0; i < workers; i++) worker()]);
+    } on ModelsNotReadyError {
+      // Silently empty - the viewer itself already says elsewhere when
+      // models aren't ready; this strip just has nothing to show.
+    } catch (_) {
+      // No strip - the viewer is still fully usable without it.
+    } finally {
+      if (token == _similarToken) {
+        isLoadingSimilar = false;
+        update();
+      }
+    }
+  }
+
+  void clearSimilar() {
+    _similarToken++; // invalidates any load still in flight so it can't repopulate after this
+    similarResults = [];
+    similarThumbCache.clear();
+    isLoadingSimilar = false;
   }
 
   void clearPickedSearchImage() {

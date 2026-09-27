@@ -13,6 +13,9 @@ Future<void> showConfirmDialog(
   required String message,
   required String confirmLabel,
   required VoidCallback onConfirm,
+  // Red for something hard to undo or worth a pause on; the app's own colour for a
+  // plain "here's what happens next, go ahead?" check.
+  Color confirmColor = AppColors.danger,
 }) async {
   final confirmed = await showDialog<bool>(
     context: context,
@@ -68,7 +71,7 @@ Future<void> showConfirmDialog(
                   Expanded(
                     child: _DialogButton(
                       label: confirmLabel,
-                      color: AppColors.danger,
+                      color: confirmColor,
                       onTap: () => Navigator.of(ctx).pop(true),
                     ),
                   ),

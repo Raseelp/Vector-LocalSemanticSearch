@@ -24,15 +24,9 @@ import 'package:twentyonevision/view/video_full_screen.dart';
 List<Widget> searchResultsSlivers({required NativeController controller}) {
   if (controller.isSearching) {
     return [
-      const SliverPadding(
-        padding: EdgeInsets.symmetric(horizontal: AppSpacing.xl),
-        sliver: SliverToBoxAdapter(
-          child: _CenterNote(
-            spinner: true,
-            title: 'Searching',
-            subtitle: 'Finding the best matches on this device...',
-          ),
-        ),
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
+        sliver: _SearchSkeletonGrid(layout: controller.resultsLayout),
       ),
     ];
   }
@@ -103,6 +97,49 @@ List<Widget> searchResultsSlivers({required NativeController controller}) {
       sliver: _ResultsSliverGrid(controller: controller),
     ),
   ];
+}
+
+// A placeholder grid shaped like the real results grid, shown while a search is in flight -
+// the same shimmering _LoadingTile the real grid falls back to for a thumbnail that hasn't
+// arrived yet, just filling the whole space rather than waiting for a spinner to clear before
+// anything about the coming layout is visible.
+class _SearchSkeletonGrid extends StatelessWidget {
+  const _SearchSkeletonGrid({required this.layout});
+
+  final ResultsLayout layout;
+
+  int get _crossAxisCount {
+    switch (layout) {
+      case ResultsLayout.list:
+        return 1;
+      case ResultsLayout.grid2:
+        return 2;
+      case ResultsLayout.grid3:
+        return 3;
+      case ResultsLayout.grid4:
+        return 4;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isList = layout == ResultsLayout.list;
+    return SliverGrid(
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: _crossAxisCount,
+        crossAxisSpacing: AppSpacing.sm,
+        mainAxisSpacing: AppSpacing.sm,
+        childAspectRatio: isList ? 1.7 : 0.86,
+      ),
+      delegate: SliverChildBuilderDelegate(
+        (context, index) => ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+          child: _LoadingTile(index: index, isVideo: index % 3 == 2),
+        ),
+        childCount: isList ? 6 : 12,
+      ),
+    );
+  }
 }
 
 // A real SliverGrid, not GridView.builder(shrinkWrap: true) - see
@@ -503,13 +540,11 @@ String _layoutLabel(ResultsLayout layout) {
 class _CenterNote extends StatelessWidget {
   const _CenterNote({
     this.icon,
-    this.spinner = false,
     required this.title,
     required this.subtitle,
   });
 
   final IconData? icon;
-  final bool spinner;
   final String title;
   final String subtitle;
 
@@ -519,17 +554,7 @@ class _CenterNote extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: AppSpacing.huge),
       child: Column(
         children: [
-          if (spinner)
-            const SizedBox(
-              width: 22,
-              height: 22,
-              child: CircularProgressIndicator(
-                strokeWidth: 2.4,
-                color: AppColors.primary,
-              ),
-            )
-          else if (icon != null)
-            Icon(icon, size: 32, color: AppColors.ink48),
+          if (icon != null) Icon(icon, size: 32, color: AppColors.ink48),
           const SizedBox(height: AppSpacing.base),
           Text(
             title,
@@ -613,10 +638,12 @@ class _LoadingTileState extends State<_LoadingTile>
   @override
   void initState() {
     super.initState();
-    // Neighbouring tiles start at different points so the grid doesn't
-    // pulse in lockstep.
-    _sweep.repeat();
+    // Neighbouring tiles start at different points so the grid doesn't pulse in lockstep - the
+    // value has to be set *before* repeat() starts, not after: AnimationController.value's
+    // setter stops the controller as part of setting it, so the other order started the repeat
+    // and immediately cancelled it again in the same frame - a shimmer frozen in place.
     _sweep.value = (widget.index * 0.137) % 1;
+    _sweep.repeat();
     _swap = Timer.periodic(const Duration(milliseconds: 1300), (_) {
       if (mounted) setState(() => _iconIndex++);
     });
@@ -633,40 +660,45 @@ class _LoadingTileState extends State<_LoadingTile>
   Widget build(BuildContext context) {
     final icon = _icons[_iconIndex % _icons.length];
 
-    return AnimatedBuilder(
-      animation: _sweep,
-      builder: (context, child) {
-        final t = _sweep.value;
-        return DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment(-2 + 4 * t, -1),
-              end: Alignment(-1 + 4 * t, 1),
-              colors: const [
-                AppColors.parchment,
-                AppColors.pearl,
-                AppColors.parchment,
-              ],
+    // A grid full of these ticks constantly and independently - without its own compositing
+    // layer, every tile's sweep would ask Flutter to reconsider repainting the whole grid each
+    // frame instead of just the one tile that actually changed.
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _sweep,
+        builder: (context, child) {
+          final t = _sweep.value;
+          return DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment(-2 + 4 * t, -1),
+                end: Alignment(-1 + 4 * t, 1),
+                colors: const [
+                  AppColors.parchment,
+                  AppColors.pearl,
+                  AppColors.parchment,
+                ],
+              ),
             ),
-          ),
-          child: child,
-        );
-      },
-      child: Center(
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 500),
-          transitionBuilder: (child, animation) => FadeTransition(
-            opacity: animation,
-            child: ScaleTransition(
-              scale: Tween(begin: 0.7, end: 1.0).animate(animation),
-              child: child,
+            child: child,
+          );
+        },
+        child: Center(
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 500),
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: ScaleTransition(
+                scale: Tween(begin: 0.7, end: 1.0).animate(animation),
+                child: child,
+              ),
             ),
-          ),
-          child: Icon(
-            icon,
-            key: ValueKey(icon),
-            size: 28,
-            color: AppColors.ink48.withValues(alpha: 0.55),
+            child: Icon(
+              icon,
+              key: ValueKey(icon),
+              size: 28,
+              color: AppColors.ink48.withValues(alpha: 0.55),
+            ),
           ),
         ),
       ),
