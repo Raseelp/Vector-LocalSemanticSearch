@@ -58,6 +58,17 @@ class SettingsScreen extends StatelessWidget {
                                   )
                                 : null,
                           ),
+                          const _SettingsRow(
+                            icon: Icons.verified_outlined,
+                            accentIcon: true,
+                            title: 'Face detector',
+                            subtitle: 'Finds where faces are in photos and videos  ·  about 3 MB  ·  built in',
+                            trailing: Icon(
+                              Icons.check_circle_rounded,
+                              color: AppColors.primary,
+                              size: 18,
+                            ),
+                          ),
                           GetBuilder<FacesController>(
                             builder: (faces) {
                               // Ready also covers a model placed on the device by hand.
@@ -87,7 +98,7 @@ class SettingsScreen extends StatelessWidget {
                       Padding(
                         padding: const EdgeInsets.fromLTRB(AppSpacing.xs, AppSpacing.sm, AppSpacing.xs, 0),
                         child: Text(
-                          'Both models run only on this device. Your photos, faces and names are never uploaded, '
+                          'All the models run only on this device. Your photos, faces and names are never uploaded, '
                           'and nothing needs the internet once they are downloaded.',
                           style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             color: AppColors.ink48,
@@ -258,6 +269,7 @@ class _SettingsRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.md),
       child: Row(
+        // Long text wraps to more lines instead of being cut off.
         children: [
           Icon(icon, size: 18, color: accentIcon ? AppColors.primary : AppColors.ink48),
           const SizedBox(width: AppSpacing.md),
@@ -267,8 +279,6 @@ class _SettingsRow extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                   style: Theme.of(
                     context,
                   ).textTheme.titleSmall?.copyWith(color: accentIcon ? AppColors.primary : null),
@@ -277,8 +287,6 @@ class _SettingsRow extends StatelessWidget {
                   const SizedBox(height: 1),
                   Text(
                     subtitle!,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                     style: Theme.of(
                       context,
                     ).textTheme.bodySmall?.copyWith(color: AppColors.ink48),

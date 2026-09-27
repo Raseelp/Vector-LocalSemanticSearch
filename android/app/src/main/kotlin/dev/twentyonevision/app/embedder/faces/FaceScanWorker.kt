@@ -95,6 +95,7 @@ class FaceScanWorker(context: Context, params: WorkerParameters) : CoroutineWork
             phase == "tune" -> "Optimising face search for your phone (one time)"
             total <= 0 -> "Preparing to find faces..."
             phase == "refine" -> "Refining small faces  •  $percent%  •  $processed/$total"
+            phase == "videos" -> "Finding faces in videos  •  $percent%  •  $processed/$total"
             else -> "Finding faces  •  $percent%  •  $processed/$total"
         }
         val intent = Intent(applicationContext, MainActivity::class.java).apply {

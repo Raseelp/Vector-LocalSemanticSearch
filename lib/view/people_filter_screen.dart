@@ -370,7 +370,7 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
                       controller: native,
                       results: faces.filterPhotos,
                       bytesFor: (item) =>
-                          faces.filterThumbs[item['path'] as String],
+                          faces.filterThumbs[FacesController.thumbKey(item)],
                       matchQuery: '',
                       loading: faces.isFilterThumbs,
                     ),

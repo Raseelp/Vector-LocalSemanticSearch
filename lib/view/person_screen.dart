@@ -130,7 +130,7 @@ class _PersonScreenState extends State<PersonScreen> {
                   sliver: collectionResultsGrid(
                     controller: native,
                     results: faces.photos,
-                    bytesFor: (item) => faces.photoThumbs[item['path'] as String],
+                    bytesFor: (item) => faces.photoThumbs[FacesController.thumbKey(item)],
                     matchQuery: '',
                     loading: faces.isLoadingThumbs,
                   ),

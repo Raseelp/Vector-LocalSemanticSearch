@@ -248,10 +248,11 @@ class FaceScanCard extends StatelessWidget {
   final VoidCallback onPause;
   final VoidCallback onResume;
 
-  static String? _speed(double? perSecond) {
+  static String? _speed(double? perSecond, {bool videos = false}) {
     if (perSecond == null || perSecond <= 0) return null;
-    if (perSecond >= 1) return '${perSecond.toStringAsFixed(1)} photos/s';
-    return '${(perSecond * 60).round()} photos/min';
+    final unit = videos ? 'videos' : 'photos';
+    if (perSecond >= 1) return '${perSecond.toStringAsFixed(1)} $unit/s';
+    return '${(perSecond * 60).round()} $unit/min';
   }
 
   static String _eta(Duration d) {
@@ -267,6 +268,7 @@ class FaceScanCard extends StatelessWidget {
     final stopped = status.userPaused;
     final tuning = status.phase == 'tune';
     final refining = status.phase == 'refine';
+    final videos = status.phase == 'videos';
     final title = stopped
         ? 'Face search paused'
         : status.paused
@@ -275,14 +277,16 @@ class FaceScanCard extends StatelessWidget {
                 ? 'Optimising for your phone'
                 : refining
                     ? 'Refining small and blurry faces'
-                    : 'Finding faces';
+                    : videos
+                        ? 'Finding faces in videos'
+                        : 'Finding faces';
     final details = <String>[
       if (tuning && !stopped) 'One-time speed test, about a minute',
-      if (!tuning && status.total > 0) '${status.processed} of ${status.total} photos',
+      if (!tuning && status.total > 0) '${status.processed} of ${status.total} ${videos ? 'videos' : 'photos'}',
       if (!tuning && status.faces > 0) '${status.faces} faces',
     ];
     // Speed and time left: only once there's a real reading, and not while stopped.
-    final speed = _speed(photosPerSecond);
+    final speed = _speed(photosPerSecond, videos: videos);
     if (!stopped && !tuning) {
       if (speed != null) details.add(speed);
       final left = eta;
@@ -349,7 +353,9 @@ class FaceScanCard extends StatelessWidget {
                 ? 'Stopped. It stays stopped until you resume.'
                 : refining
                     ? 'The clear faces are done - now the small ones are matched to the same people.'
-                    : 'People show up below as they are found. This runs by itself, on this device only.',
+                    : videos
+                        ? 'Photos are done - now the videos, a few seconds each. It only looks at some frames of each.'
+                        : 'People show up below as they are found. This runs by itself, on this device only.',
             style: textTheme.bodySmall?.copyWith(color: AppColors.ink48, height: 1.4),
           ),
         ],

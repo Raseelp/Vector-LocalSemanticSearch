@@ -90,7 +90,10 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
         var sum = FloatArray(0)
         var centroid = FloatArray(0)
         var count = 0
+        // Every photo (or video frame) they are in - who appears together - and, separately,
+        // the photos and videos (a video counts once however many frames they are in).
         val photos = HashSet<Long>()
+        val media = HashSet<Long>()
         val protos = ArrayList<Proto>()
 
         // The best few faces (from the second face on: with just one, the
@@ -129,6 +132,7 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
 
         fun absorb(other: PersonState) {
             photos.addAll(other.photos)
+            media.addAll(other.media)
             if (other.count == 0) return
             if (sum.isEmpty()) {
                 sum = FloatArray(other.sum.size)
@@ -241,6 +245,10 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
     // photo -> people who already have a face in it (a person can't appear twice).
     private val photoPeople = HashMap<Long, HashSet<Long>>()
 
+    // (person, video) -> how many faces from that video have shaped the person so far: a
+    // long clip of one person must not outweigh a lifetime of photos.
+    private val videoUses = HashMap<Pair<Long, Long>, Int>()
+
     private val config: FaceClusterConfig
         get() = FaceClusterConfig.forStrictness(store.getMeta(META_STRICTNESS))
 
@@ -252,6 +260,7 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
     fun invalidate() = synchronized(lock) {
         people = null
         photoPeople.clear()
+        videoUses.clear()
     }
 
     private fun state(): HashMap<Long, PersonState> {
@@ -264,8 +273,12 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
             val personId = f.personId ?: return@forEachFace
             val person = map[personId] ?: return@forEachFace
             person.photos.add(f.photoHash)
+            person.media.add(f.mediaKey)
             photoPeople.getOrPut(f.photoHash) { HashSet() }.add(person.id)
-            if (f.good) person.add(f.embedding, f.rank, join)
+            if (f.good) {
+                person.add(f.embedding, f.rank, join)
+                if (f.mediaKey != f.photoHash) videoUses[person.id to f.mediaKey] = (videoUses[person.id to f.mediaKey] ?: 0) + 1
+            }
         }
         people = map
         return map
@@ -292,8 +305,60 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
      * full (a photo opened in the viewer): like a face of a new photo - it joins a person,
      * or, if it is clear, starts one.
      */
-    fun assignRecognised(faceId: Long, photoHash: Long, embedding: FloatArray, good: Boolean, rank: Float) =
-        synchronized(lock) { place(state(), config, photoHash, faceId, embedding, good, rank) }
+    fun assignRecognised(
+        faceId: Long,
+        photoHash: Long,
+        embedding: FloatArray,
+        good: Boolean,
+        rank: Float,
+        mediaKey: Long = photoHash,
+    ): Long? = synchronized(lock) { place(state(), config, photoHash, faceId, embedding, good, rank, mediaKey) }
+
+    /**
+     * Places a face found in a video frame (see [place]); returns who it joined or became,
+     * or null. [photoHash] identifies the frame (two faces in one frame are two people),
+     * [mediaKey] the video.
+     */
+    fun assignVideoFace(faceId: Long, frameHash: Long, videoHash: Long, embedding: FloatArray, good: Boolean, rank: Float): Long? =
+        assignRecognised(faceId, frameHash, embedding, good, rank, videoHash)
+
+    /** Puts a face with the person the face it was tracked from was placed with (no effect on who they are). */
+    fun attachTracked(faceId: Long, frameHash: Long, videoHash: Long, personId: Long) = synchronized(lock) {
+        val person = state()[personId] ?: return@synchronized
+        val taken = photoPeople[frameHash]
+        if (taken != null && personId in taken) return@synchronized // already in this frame
+        store.setFacePerson(faceId, personId)
+        person.photos.add(frameHash)
+        person.media.add(videoHash)
+        photoPeople.getOrPut(frameHash) { HashSet() }.add(personId)
+    }
+
+    /**
+     * Who a face is, without changing anything: the closest listed person at the usual
+     * threshold (skipping [exclude], e.g. people already found in the same frame), or null.
+     */
+    fun identify(embedding: FloatArray, exclude: Set<Long>): Long? = synchronized(lock) {
+        var best: PersonState? = null
+        var bestSim = config.join
+        for (person in state().values) {
+            if (person.count == 0 || person.id in exclude) continue
+            val sim = person.bestSimTo(embedding)
+            if (sim >= bestSim) {
+                bestSim = sim
+                best = person
+            }
+        }
+        best?.id
+    }
+
+    // Two faces per (person, video) may shape a person; the rest of that video's faces only join.
+    private fun videoSlot(personId: Long, mediaKey: Long): Boolean {
+        val key = personId to mediaKey
+        val used = videoUses[key] ?: 0
+        if (used >= MAX_PER_VIDEO) return false
+        videoUses[key] = used + 1
+        return true
+    }
 
     private fun place(
         state: HashMap<Long, PersonState>,
@@ -303,24 +368,32 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
         embedding: FloatArray,
         good: Boolean,
         rank: Float,
-    ) {
+        mediaKey: Long = photoHash,
+    ): Long? {
+        val isVideo = mediaKey != photoHash
         val best = closest(listOf(state.values), embedding, photoHash, blocked = null, threshold = if (good) cfg.join else cfg.weakJoin)
 
         if (best != null) {
             store.setFacePerson(faceId, best.id)
-            if (good) best.add(embedding, rank, cfg.join)
+            if (good && (!isVideo || videoSlot(best.id, mediaKey))) best.add(embedding, rank, cfg.join)
             best.photos.add(photoHash)
+            best.media.add(mediaKey)
             photoPeople.getOrPut(photoHash) { HashSet() }.add(best.id)
+            return best.id
         } else if (good) {
             val id = store.createPerson()
             val person = PersonState(id, pinned = false, named = false)
             person.add(embedding, rank, cfg.join)
+            if (isVideo) videoSlot(id, mediaKey)
             person.photos.add(photoHash)
+            person.media.add(mediaKey)
             state[id] = person
             store.setFacePerson(faceId, id)
             photoPeople.getOrPut(photoHash) { HashSet() }.add(id)
+            return id
         }
         // A weak face nobody matches stays unassigned.
+        return null
     }
 
     /**
@@ -435,7 +508,7 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
         val rejected = store.rejectedPairs()
         val hidden = store.allPeople().filter { it.hidden }.map { it.id }.toSet()
         val listed = state.values.filter {
-            it.count > 0 && it.photos.size >= FaceStore.MIN_PHOTOS_TO_SHOW && it.id !in hidden
+            it.count > 0 && it.media.size >= FaceStore.MIN_PHOTOS_TO_SHOW && it.id !in hidden
         }
 
         val out = ArrayList<MergeSuggestion>()
@@ -659,6 +732,7 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
             val target = best ?: PersonState(nextTemp--, pinned = false, named = false).also { provisional[it.id] = it }
             target.add(f.embedding, f.rank, cfg.join)
             target.photos.add(f.photoHash)
+            target.media.add(f.mediaKey)
             photoPeople.getOrPut(f.photoHash) { HashSet() }.add(target.id)
             assignments += f.id to target.id
         }
@@ -740,6 +814,9 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
 
         // Looks kept per person.
         private const val MAX_PROTOS = 6
+
+        // Faces of one video that may shape a person.
+        private const val MAX_PER_VIDEO = 2
 
         // Faces shown per group when previewing a split.
         private const val SPLIT_SAMPLE = 8

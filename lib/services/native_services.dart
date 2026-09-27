@@ -317,6 +317,48 @@ class NativeServices {
     return (list ?? const []).map((e) => PhotoFace.fromMap(e as Map<dynamic, dynamic>)).toList();
   }
 
+  /// Who is in the frame at [positionMs] of a video, looked up now (nothing is stored). Faces
+  /// come back with made-up negative ids, just to tell them apart. [token] as in [photoFaces].
+  Future<List<PhotoFace>> videoFaces(String uri, int positionMs, {int? token}) async {
+    final list = await _channel.invokeListMethod<dynamic>(
+      'videoFaces',
+      {'uri': uri, 'positionMs': positionMs, 'token': token},
+    );
+    return (list ?? const []).map((e) => PhotoFace.fromMap(e as Map<dynamic, dynamic>)).toList();
+  }
+
+  /// The faces a scan stored for the frame at exactly [tsMs] of a video: [VideoFrameFaces.exact]
+  /// says whether their positions can be trusted on the player's picture at once.
+  Future<VideoFrameFaces> videoFrameFaces(String uri, int tsMs) async {
+    final map = await _channel.invokeMapMethod<String, dynamic>('videoFrameFaces', {'uri': uri, 'tsMs': tsMs});
+    if (map == null) return VideoFrameFaces(false, const []);
+    return VideoFrameFaces(
+      map['exact'] as bool? ?? false,
+      ((map['faces'] as List?) ?? const []).map((e) => PhotoFace.fromMap(e as Map<dynamic, dynamic>)).toList(),
+    );
+  }
+
+  /// The people the background scan found in a video, and when (earliest first).
+  Future<List<VideoPerson>> videoPeople(String uri) async {
+    final list = await _channel.invokeListMethod<dynamic>('videoPeople', {'uri': uri});
+    return (list ?? const []).map((e) => VideoPerson.fromMap(e as Map<dynamic, dynamic>)).toList();
+  }
+
+  /// Whether a video can be scanned and has been ('needs', 'done', 'unavailable'), and how loose
+  /// the next scan of it will be.
+  Future<VideoScanInfo> videoScanState(String uri) async {
+    final map = await _channel.invokeMapMethod<String, dynamic>('videoScanState', {'uri': uri});
+    return map == null ? VideoScanInfo('unavailable', 0, null) : VideoScanInfo.fromMap(map);
+  }
+
+  /// A video the user asked to scan: scans it now if it hasn't been (its people are then ready
+  /// for [videoPeople]). True if it was scanned; false if it already was, or can't be.
+  /// Follow its progress with [photoScanStatus] (key "video:" + the uri).
+  Future<VideoScanResult> scanVideoFaces(String uri, {int? token}) async {
+    final map = await _channel.invokeMapMethod<String, dynamic>('scanVideoFaces', {'uri': uri, 'token': token});
+    return map == null ? VideoScanResult(false, 0, 0) : VideoScanResult.fromMap(map);
+  }
+
   Future<void> cancelPhotoFaces(int token) => _channel.invokeMethod('cancelPhotoFaces', {'token': token});
 
   /// How far the scan of a photo opened in the viewer has got, or null if none is running.
@@ -380,8 +422,14 @@ class NativeServices {
   /// Forgets every face and person (names too); the next scan starts over.
   Future<void> resetFaces() => _channel.invokeMethod('resetFaces');
 
-  Future<void> setFaceSettings({bool? thorough, bool? refine, String? strictness}) =>
-      _channel.invokeMethod('setFaceSettings', {'thorough': thorough, 'refine': refine, 'strictness': strictness});
+  Future<void> setFaceSettings({bool? thorough, bool? refine, String? strictness, bool? scanVideos, String? videoDensity}) =>
+      _channel.invokeMethod('setFaceSettings', {
+        'thorough': thorough,
+        'refine': refine,
+        'strictness': strictness,
+        'scanVideos': scanVideos,
+        'videoDensity': videoDensity,
+      });
 
   /// Runs the one-off speed test for this phone again.
   Future<void> retuneFaces() => _channel.invokeMethod('retuneFaces');
@@ -693,25 +741,111 @@ class MergeSuggestion {
 }
 
 /// One face of a person (for the review screen).
+/// What tapping a video's scan button would do.
+class VideoScanInfo {
+  VideoScanInfo(this.state, this.level, this.lastFaces);
+
+  final String state; // 'needs', 'done' or 'unavailable'
+  final int level; // how loose the next scan is: 0 standard, 1 looser, 2 loosest
+  final int? lastFaces; // faces the last scan kept (null: never scanned)
+
+  factory VideoScanInfo.fromMap(Map<dynamic, dynamic> m) => VideoScanInfo(
+        m['state'] as String? ?? 'unavailable',
+        (m['level'] as num?)?.toInt() ?? 0,
+        (m['lastFaces'] as num?)?.toInt(),
+      );
+}
+
+/// How a video scan went.
+class VideoScanResult {
+  VideoScanResult(this.scanned, this.level, this.faces);
+
+  final bool scanned;
+  final int level; // the search level it used
+  final int faces; // faces kept
+
+  factory VideoScanResult.fromMap(Map<dynamic, dynamic> m) => VideoScanResult(
+        m['scanned'] as bool? ?? false,
+        (m['level'] as num?)?.toInt() ?? 0,
+        (m['faces'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// Stored faces of one video frame; [exact]: the scan read exact frames, so they line up on screen.
+class VideoFrameFaces {
+  VideoFrameFaces(this.exact, this.faces);
+
+  final bool exact;
+  final List<PhotoFace> faces;
+}
+
+/// A person seen in a video, and at which moments (ms).
+class VideoPerson {
+  VideoPerson({required this.person, required this.times, this.storedTimes = const []});
+
+  final Person person;
+  final List<int> times;
+
+  /// The moments where a face of theirs is stored (a position to point at) - a subset of [times].
+  final List<int> storedTimes;
+
+  factory VideoPerson.fromMap(Map<dynamic, dynamic> m) => VideoPerson(
+        person: Person.fromMap(m['person'] as Map<dynamic, dynamic>),
+        times: (m['times'] as List? ?? const []).map((e) => (e as num).toInt()).toList(),
+        storedTimes: (m['stored'] as List? ?? const []).map((e) => (e as num).toInt()).toList(),
+      );
+}
+
 /// Progress of the face scan of one photo: which step, and how many faces.
 class PhotoScanStatus {
-  PhotoScanStatus({required this.stage, required this.faces, required this.total, required this.more});
+  PhotoScanStatus({
+    required this.stage,
+    required this.faces,
+    required this.total,
+    required this.more,
+    this.video = false,
+    this.step = 0,
+    this.steps = 0,
+    this.relax = 0,
+  });
 
   final String stage; // reading, detecting, recognising, placing
   final int faces; // faces found
   final int total; // faces being recognised
   final bool more; // finishing a photo scanned before
+  final bool video; // a whole video being scanned
+  final int step, steps; // a video: frames looked through so far, of how many
+  final int relax; // a video: how loose the search is (0 standard, 1 looser, 2 loosest)
 
   factory PhotoScanStatus.fromMap(Map<dynamic, dynamic> m) => PhotoScanStatus(
         stage: m['stage'] as String? ?? 'reading',
         faces: (m['faces'] as num?)?.toInt() ?? 0,
         total: (m['total'] as num?)?.toInt() ?? 0,
         more: m['more'] as bool? ?? false,
+        video: m['video'] as bool? ?? false,
+        step: (m['step'] as num?)?.toInt() ?? 0,
+        steps: (m['steps'] as num?)?.toInt() ?? 0,
+        relax: (m['relax'] as num?)?.toInt() ?? 0,
       );
 
   /// What to tell the person, in a few words.
   String get message {
     String faceWord(int n) => n == 1 ? '1 face' : '$n faces';
+    if (video) {
+      switch (stage) {
+        case 'detecting':
+          final mode = relax >= 2 ? 'Loosest search' : relax == 1 ? 'Looser search' : 'Scanning';
+          return steps > 0
+              ? '$mode · frame $step of $steps${faces > 0 ? ' · ${faceWord(faces)} spotted' : ''}'
+              : 'Opening the video';
+        case 'recognising':
+          return 'Identifying ${faceWord(total)}';
+        case 'placing':
+          return 'Matching faces to people';
+        default:
+          return 'Opening the video';
+      }
+    }
     switch (stage) {
       case 'reading':
         return 'Opening the photo';
@@ -758,17 +892,19 @@ class PhotoFace {
 }
 
 class PersonFace {
-  PersonFace({required this.faceId, required this.good, required this.photoUri});
+  PersonFace({required this.faceId, required this.good, required this.photoUri, this.isVideo = false});
 
   final int faceId;
   // False for small / blurry / turned-away faces that weren't used to decide who the person is.
   final bool good;
   final String photoUri;
+  final bool isVideo; // found in a video: photoUri is the video
 
   factory PersonFace.fromMap(Map<dynamic, dynamic> m) => PersonFace(
         faceId: (m['faceId'] as num).toInt(),
         good: m['good'] as bool? ?? true,
         photoUri: m['photoUri'] as String? ?? '',
+        isVideo: m['isVideo'] as bool? ?? false,
       );
 }
 
@@ -795,6 +931,10 @@ class FaceStatus {
     this.thorough = false,
     this.strictness = 'balanced',
     this.modelsDir = '',
+    this.scanVideos = true,
+    this.videoDensity = 'balanced',
+    this.videos = 0,
+    this.videosTotal = 0,
   });
 
   // paused: waiting for photo indexing to finish. userPaused: stopped by the user.
@@ -820,7 +960,13 @@ class FaceStatus {
   final String strictness;
   final String modelsDir;
 
-  /// Photos left in the pass that is running now.
+  // Videos: whether they are scanned, how many frames ('fast' / 'balanced' / 'thorough'),
+  // and how many are done of how many.
+  final bool scanVideos;
+  final String videoDensity;
+  final int videos, videosTotal;
+
+  /// Photos (or videos, in the videos pass) left in the pass that is running now.
   int get phaseRemaining => (total - processed).clamp(0, total);
 
   /// Photos still to work on overall, including faces waiting for the refining pass.
@@ -847,6 +993,10 @@ class FaceStatus {
         thorough: thorough,
         strictness: strictness,
         modelsDir: modelsDir,
+        scanVideos: scanVideos,
+        videoDensity: videoDensity,
+        videos: videos,
+        videosTotal: videosTotal,
       );
 
   double? get fraction => total > 0 ? (processed / total).clamp(0.0, 1.0) : null;
@@ -882,6 +1032,10 @@ class FaceStatus {
         thorough: previous.thorough,
         strictness: previous.strictness,
         modelsDir: previous.modelsDir,
+        scanVideos: previous.scanVideos,
+        videoDensity: previous.videoDensity,
+        videos: previous.videos,
+        videosTotal: previous.videosTotal,
       );
 
   factory FaceStatus.fromMap(Map<dynamic, dynamic> m) => FaceStatus(
@@ -905,6 +1059,10 @@ class FaceStatus {
         thorough: m['thorough'] as bool? ?? false,
         strictness: m['strictness'] as String? ?? 'balanced',
         modelsDir: m['modelsDir'] as String? ?? '',
+        scanVideos: m['scanVideos'] as bool? ?? true,
+        videoDensity: m['videoDensity'] as String? ?? 'balanced',
+        videos: (m['videos'] as num?)?.toInt() ?? 0,
+        videosTotal: (m['videosTotal'] as num?)?.toInt() ?? 0,
       );
 }
 

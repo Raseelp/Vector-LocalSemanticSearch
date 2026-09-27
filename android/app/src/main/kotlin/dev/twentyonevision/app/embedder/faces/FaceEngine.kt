@@ -34,8 +34,8 @@ class FaceEngine(context: Context) : AutoCloseable {
     }
 
     /** Every face in [bitmap] (an upright photo). The model is read fresh each call, so a swap needs no restart. */
-    fun detect(bitmap: Bitmap, thorough: Boolean): List<DetectedFace> =
-        detector.detect(bitmap, tiled = thorough)
+    fun detect(bitmap: Bitmap, thorough: Boolean, scoreThreshold: Float = FaceDetector.DEFAULT_SCORE_THRESHOLD): List<DetectedFace> =
+        detector.detect(bitmap, scoreThreshold, tiled = thorough)
 
     /**
      * Cuts and straightens one face (landmarks are 10 numbers in [bitmap]'s

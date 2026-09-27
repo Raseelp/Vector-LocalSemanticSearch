@@ -42,6 +42,26 @@ object FaceSettings {
         prefs(context).edit().putBoolean("refine", value).apply()
     }
 
+    /** Also find the people in videos (after the photos). */
+    fun scanVideos(context: Context): Boolean = prefs(context).getBoolean("scan_videos", true)
+
+    fun setScanVideos(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean("scan_videos", value).apply()
+    }
+
+    const val DENSITY_FAST = "fast"
+    const val DENSITY_BALANCED = "balanced"
+    const val DENSITY_THOROUGH = "thorough"
+
+    /** How many frames of a video are searched: fast (about one per 3 s), balanced (2 s), thorough (1 s). */
+    fun videoDensity(context: Context): String = prefs(context).getString("video_density", DENSITY_BALANCED) ?: DENSITY_BALANCED
+
+    fun setVideoDensity(context: Context, value: String) {
+        if (value == DENSITY_FAST || value == DENSITY_BALANCED || value == DENSITY_THOROUGH) {
+            prefs(context).edit().putString("video_density", value).apply()
+        }
+    }
+
     /** The user stopped the scan; nothing starts it again until they resume. */
     fun paused(context: Context): Boolean = prefs(context).getBoolean("paused", false)
 
@@ -74,6 +94,7 @@ class FaceServices private constructor(context: Context) {
     val store = FaceStore(context)
     val clusterer = FaceClusterer(context, store)
     val scanner = FaceScanner(context, this)
+    val videoScanner = VideoFaceScanner(context, this)
     val crops = FaceCrops(context, store)
 
     companion object {
@@ -113,6 +134,14 @@ class PhotoScanProgress {
     @Volatile var faces = 0 // faces found worth recognising
     @Volatile var total = 0 // how many are being recognised now
     @Volatile var more = false // finishing a photo that was scanned before
+
+    // A video: how many of its sampled frames have been looked through so far.
+    @Volatile var video = false
+    @Volatile var step = 0
+    @Volatile var steps = 0
+
+    // How loose the search is: 0 standard, 1 looser, 2 loosest (see VideoFaceScanner.Relax).
+    @Volatile var relax = 0
 }
 
 class FaceScanner(private val context: Context, private val services: FaceServices) {
@@ -187,13 +216,20 @@ class FaceScanner(private val context: Context, private val services: FaceServic
         val engine = services.engine
         if (FaceSettings.paused(context) || !engine.isReady()) return false
         val store = services.store
-        val indexed = ScanEngineHolder.embeddingEngine(context).indexedImages()
-        if (indexed.isEmpty()) return false
+        val indexer = ScanEngineHolder.embeddingEngine(context)
+        val indexed = indexer.indexedImages()
+        val videos = if (FaceSettings.scanVideos(context)) indexer.indexedVideos() else emptyList()
+        if (indexed.isEmpty() && videos.isEmpty()) return false
         if (!sameModels(store.getMeta(META_MODEL_KEY), engine.modelKey())) return true
         if (FaceTuner.needsTuning(context, engine.store)) return true
         val finished = store.processedHashes()
         if (indexed.any { it.hash !in finished }) return true
-        return FaceSettings.refine(context) && store.deferredPhotoCount() > 0
+        if (FaceSettings.refine(context) && store.deferredPhotoCount() > 0) return true
+        if (videos.isNotEmpty()) {
+            val done = store.processedVideoHashes()
+            if (videos.any { it.hash !in done }) return true
+        }
+        return false
     }
 
     /**
@@ -296,6 +332,54 @@ class FaceScanner(private val context: Context, private val services: FaceServic
     }
 
     /**
+     * A video opened in the viewer: scan it now if it hasn't been (all of its sampled frames,
+     * stored and grouped exactly as the background scan would), so its people are ready and
+     * the strip can show them. Progress is readable while it runs (see [photoProgress], key
+     * "video:uri"). True if the video is now complete; false if it already was, could not be
+     * read, or isn't in the search index / no models.
+     */
+    /** What a tap on the video's scan button would do: [state] "needs" / "done" / "unavailable"; the search [level]; faces the last scan kept. */
+    class VideoScanPlan(val state: String, val level: Int, val lastFaces: Int?)
+
+    fun videoScanPlan(uri: String): VideoScanPlan {
+        val engine = services.engine
+        val store = services.store
+        if (!engine.isReady() || !sameModels(store.getMeta(META_MODEL_KEY), engine.modelKey())) {
+            return VideoScanPlan("unavailable", 0, null)
+        }
+        val video = ScanEngineHolder.embeddingEngine(context).indexedVideos().firstOrNull { it.uri == uri }
+            ?: return VideoScanPlan("unavailable", 0, null)
+        val stored = services.videoScanner.relaxOf(video.hash)
+        val last = store.videoFaceCount(video.hash)
+        // Scanned before and nothing was found: the next look is a looser one.
+        val level = if (last != null && last == 0) (stored + 1).coerceAtMost(VideoFaceScanner.MAX_RELAX) else stored
+        return VideoScanPlan(if (last != null) "done" else "needs", level, last)
+    }
+
+    /** The result of [scanVideoNow]: whether it was scanned, at what search level, and how many faces were kept. */
+    class VideoScanResult(val scanned: Boolean, val level: Int, val faces: Int)
+
+    fun scanVideoNow(uri: String): VideoScanResult {
+        val engine = services.engine
+        val store = services.store
+        val none = VideoScanResult(false, 0, 0)
+        if (!engine.isReady()) return none
+        if (!sameModels(store.getMeta(META_MODEL_KEY), engine.modelKey())) return none
+        val video = ScanEngineHolder.embeddingEngine(context).indexedVideos().firstOrNull { it.uri == uri } ?: return none
+
+        // Asked for by the user (the button): scan it even if it was scanned before - the second
+        // look replaces the first. If the last look found nothing, this one is less strict.
+        val level = videoScanPlan(uri).level
+        val outcome = services.videoScanner.scan(video, { false }, { true }, background = false, relax = level)
+        if (outcome == VideoFaceScanner.BUSY) {
+            // The background scan is on it: wait for it to finish rather than do it twice.
+            services.videoScanner.waitUntilFree(video.hash, 180_000L)
+            return VideoScanResult(store.isVideoDone(video.hash), level, store.videoFaceCount(video.hash) ?: 0)
+        }
+        return VideoScanResult(outcome >= 0, level, if (outcome > 0) outcome else 0)
+    }
+
+    /**
      * Looks for faces in one photo right now: for a photo opened in the viewer
      * before the background scan has reached it. Only photos already in the search
      * index (that is where their identity comes from), and only with the models
@@ -362,6 +446,10 @@ class FaceScanner(private val context: Context, private val services: FaceServic
         // Set for a photo opened in the viewer: its progress is reported here.
         var watch: PhotoScanProgress? = null
 
+        // Videos: how many this run has done, and when that part started (for a fair time-left).
+        var videosDone = 0
+        var videosStartedAt = 0L
+
         var phase = "scan"
         var processed = 0
         var total = 0
@@ -395,8 +483,9 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                 "faces" to stats.second,
                 "people" to stats.third,
                 "failed" to attempt.failed,
-                "runProcessed" to attempt.processed,
-                "elapsedMs" to (now - startedAt),
+                // A video takes far longer than a photo, so its time-left comes from videos only.
+                "runProcessed" to (if (phase == "videos") videosDone else attempt.processed),
+                "elapsedMs" to (if (phase == "videos") now - videosStartedAt else now - startedAt),
                 "error" to error,
             )
             FaceScanHub.publish(status)
@@ -466,6 +555,11 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                 if (!hasNewPhotos()) break
             }
 
+            if (FaceSettings.scanVideos(context)) {
+                phase = "videos"
+                if (!scanVideos()) return
+            }
+
             timing.report()
             clusterer.mergeSimilar()
             phase = "scan"
@@ -473,6 +567,54 @@ class FaceScanner(private val context: Context, private val services: FaceServic
             processed = photos
             total = photos
             emit(done = true, force = true)
+        }
+
+        // ---------------- videos ----------------
+
+        /** False if stopped. */
+        fun scanVideos(): Boolean {
+            val indexer = ScanEngineHolder.embeddingEngine(context)
+            val videos = indexer.indexedVideos()
+            if (store.purgeMissingVideos(videos.map { it.hash }.toHashSet())) clusterer.invalidate()
+
+            val done = store.processedVideoHashes()
+            val pending = videos.filter { it.hash !in done }
+            total = videos.size
+            processed = videos.size - pending.size
+            videosDone = 0
+            videosStartedAt = SystemClock.elapsedRealtime()
+            emit(force = true)
+
+            for (video in pending) {
+                if (shouldStop()) {
+                    emit(done = true, force = true)
+                    return false
+                }
+                if (!waitForIndexing()) {
+                    emit(done = true, force = true)
+                    return false
+                }
+                // Opened in the viewer meanwhile (scanned there, or being scanned there now).
+                if (store.isVideoDone(video.hash)) {
+                    processed++
+                    continue
+                }
+                val outcome = services.videoScanner.scan(video, shouldStop, gate = { waitForIndexing() })
+                when (outcome) {
+                    VideoFaceScanner.BUSY -> continue // the viewer has it; nothing to do here
+                    VideoFaceScanner.STOPPED -> {
+                        emit(done = true, force = true)
+                        return false
+                    }
+                    VideoFaceScanner.FAILED -> attempt.failed++ // tried again on a later run
+                    else -> {
+                        processed++
+                        videosDone++
+                    }
+                }
+                emit()
+            }
+            return true
         }
 
         private fun hasNewPhotos(): Boolean {

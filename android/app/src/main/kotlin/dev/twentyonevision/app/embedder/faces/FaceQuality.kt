@@ -66,6 +66,16 @@ object FaceQuality {
         return (sumSq / n - mean * mean).toFloat()
     }
 
+    // Video frames are held to nearly the same standard as photos - a touch more on how sharp a
+    // face is, since motion blur is common, but not so much that a face clearly there is skipped.
+    const val VIDEO_MIN_SIZE_PX = 44
+    const val VIDEO_MIN_SCORE = 0.5f
+    const val VIDEO_MAX_YAW = 0.65f
+    const val VIDEO_MIN_SHARPNESS = 14f
+
+    fun isGoodVideo(sizePx: Int, score: Float, sharpness: Float, yaw: Float): Boolean =
+        sizePx >= VIDEO_MIN_SIZE_PX && score >= VIDEO_MIN_SCORE && yaw <= VIDEO_MAX_YAW && sharpness >= VIDEO_MIN_SHARPNESS
+
     fun isGood(sizePx: Int, score: Float, sharpness: Float, yaw: Float): Boolean =
         sizePx >= MIN_SIZE_PX && score >= MIN_SCORE && yaw <= MAX_YAW && sharpness >= MIN_SHARPNESS
 

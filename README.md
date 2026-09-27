@@ -48,12 +48,32 @@ its progress (speed and time left) while people appear as they are found.
   results you can add or remove people.
 - **Teaser on Search.** When the search box is idle, the people found so far
   sit beside your collections.
+- **Videos too.** After the photos, the scan goes through your videos: it looks at
+  frames spread through each one (fast / balanced / thorough in the face options),
+  links a face across neighbouring frames into one track and recognises only the best
+  one or two faces of each track, so a clip costs a handful of recognitions, not
+  hundreds. Faces in video must be clearer than in photos (motion blur), a small
+  picture of each kept face is saved, and a video counts as one item however many frames
+  someone is in. People's pages and *Find together* mix photos and videos; a video opens
+  at the moment the person shows up. In the video viewer, the people found are a row of
+  faces above the playback bar: tap one to jump to where they appear (and see those
+  moments on the bar), tap again for their next appearance. It can be switched off in the
+  face options.
 - **Tap a face in a photo.** In the full-screen viewer, recognised faces can be
   tapped: a morphing, glowing outline draws itself round the head and a small
   card shows who it is — tap it to open that person. A photo the background
   scan hasn't reached yet (or has only partly recognised) is scanned the moment
   you open it, with a quiet glow and live progress ("Found 12 faces ·
   identifying"), and is then marked complete so it isn't looked at again.
+- **Scan a video from its viewer.** A video the background scan hasn't reached has a
+  "find people" button in the top bar. Tapping it scans that video while it plays and
+  everything else keeps working: the same quiet glow, with live progress ("Scanning frame 7
+  of 20 · 5 faces"), and the people found appear as a row above the playback bar. Tapping the
+  button again scans again and replaces the first result.
+- **Tap a face in a paused video.** Pause a video (or scrub and let go): after a moment
+  the frame on screen is looked at and every face that matches someone you know gets the
+  same tappable outline as in a photo. This is looked up on the spot and stores nothing,
+  so it works even before the background scan has reached the video.
 
 The recognition pipeline is model-independent: the detector and the recognition
 model are described by their own specs, so either can be swapped without code

@@ -1074,6 +1074,17 @@ class EmbeddingEngine(
         return out
     }
 
+    /** Every indexed video, once each - what face grouping works through after the photos. */
+    fun indexedVideos(): List<IndexedVideo> {
+        val seen = HashSet<Long>()
+        val out = ArrayList<IndexedVideo>()
+        for (record in store.readAll()) {
+            val uri = record.videoUri ?: continue
+            if (seen.add(record.hash)) out += IndexedVideo(record.hash, uri)
+        }
+        return out
+    }
+
     fun getStoredCountForFolder(folderId: String): Int = store.countForFolder(folderId)
 
     // Looks up one specific stored item's embedding by the same identity

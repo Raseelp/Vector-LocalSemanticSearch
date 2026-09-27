@@ -323,6 +323,21 @@ class FacesController extends GetxController {
 
   /// Shows [person]. [push]: a new person page has opened (as opposed to reloading
   /// the one already showing).
+  /// What identifies a grid item's picture: a photo by its path, a video by path and moment.
+  static String thumbKey(Map<String, dynamic> item) {
+    final path = item['path'] as String;
+    if (item['isVideo'] as bool? ?? false) return '$path@${(item['timestampMs'] as num?)?.toInt() ?? 0}';
+    return path;
+  }
+
+  Future<Uint8List> _thumbFor(Map<String, dynamic> item) {
+    final path = item['path'] as String;
+    if (item['isVideo'] as bool? ?? false) {
+      return _native.loadVideoThumbnail(uri: path, timestampMs: (item['timestampMs'] as num?)?.toInt() ?? 0);
+    }
+    return _native.loadThumbnail(uri: path, isVideo: false, size: 420);
+  }
+
   Future<void> openPerson(Person person, {bool push = false}) async {
     if (push) {
       _openPeople.add(person);
@@ -352,7 +367,7 @@ class FacesController extends GetxController {
     // time in list order, so the top of the grid fills first.
     final pending = <Map<String, dynamic>>[];
     for (final item in photos) {
-      final key = item['path'] as String;
+      final key = thumbKey(item);
       final cached = _thumbCache.remove(key);
       if (cached != null) {
         _thumbCache[key] = cached;
@@ -367,9 +382,10 @@ class FacesController extends GetxController {
     var sinceUpdate = 0;
     Future<void> worker() async {
       while (token == _openToken && next < pending.length) {
-        final key = pending[next++]['path'] as String;
+        final item = pending[next++];
+        final key = thumbKey(item);
         try {
-          final bytes = await _native.loadThumbnail(uri: key, isVideo: false, size: 420);
+          final bytes = await _thumbFor(item);
           _thumbCache.remove(key);
           _thumbCache[key] = bytes;
           if (_thumbCache.length > 500) _thumbCache.remove(_thumbCache.keys.first);
@@ -562,7 +578,7 @@ class FacesController extends GetxController {
     // at a time in list order.
     final pending = <Map<String, dynamic>>[];
     for (final item in filterPhotos) {
-      final key = item['path'] as String;
+      final key = thumbKey(item);
       final cached = _thumbCache.remove(key);
       if (cached != null) {
         _thumbCache[key] = cached;
@@ -577,9 +593,10 @@ class FacesController extends GetxController {
     var sinceUpdate = 0;
     Future<void> worker() async {
       while (token == _filterToken && next < pending.length) {
-        final key = pending[next++]['path'] as String;
+        final item = pending[next++];
+        final key = thumbKey(item);
         try {
-          final bytes = await _native.loadThumbnail(uri: key, isVideo: false, size: 420);
+          final bytes = await _thumbFor(item);
           _thumbCache.remove(key);
           _thumbCache[key] = bytes;
           if (_thumbCache.length > 500) _thumbCache.remove(_thumbCache.keys.first);
@@ -705,6 +722,16 @@ class FacesController extends GetxController {
 
   Future<void> setThorough(bool value) async {
     await _native.setFaceSettings(thorough: value);
+    await refreshStatus();
+  }
+
+  Future<void> setScanVideos(bool value) async {
+    await _native.setFaceSettings(scanVideos: value);
+    await refreshStatus();
+  }
+
+  Future<void> setVideoDensity(String value) async {
+    await _native.setFaceSettings(videoDensity: value);
     await refreshStatus();
   }
 

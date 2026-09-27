@@ -35,6 +35,7 @@ import dev.twentyonevision.app.embedder.faces.FaceModelKind
 import dev.twentyonevision.app.embedder.faces.FaceScanHub
 import dev.twentyonevision.app.embedder.faces.FaceScanWorker
 import dev.twentyonevision.app.embedder.faces.FaceServices
+import dev.twentyonevision.app.embedder.faces.PhotoScanProgress
 import dev.twentyonevision.app.embedder.faces.FaceTuner
 import dev.twentyonevision.app.embedder.faces.FaceSettings
 import dev.twentyonevision.app.embedder.models.ModelCatalog
@@ -97,6 +98,9 @@ class MainActivity : FlutterActivity() {
     // A photo opened in the viewer that the face scan hasn't reached yet is analysed on
     // its own thread, so it doesn't queue behind the other face calls.
     private val photoFacesExecutor = Executors.newSingleThreadExecutor()
+    // A whole video is scanned on its own thread too: it can take a while, and must not hold up
+    // the quick look-ups (a photo's faces, the paused frame of a video).
+    private val videoScanExecutor = Executors.newSingleThreadExecutor()
     // Viewers that were closed before their photo's turn came (one photo is scanned at a time),
     // by the token each viewer sent: those requests are skipped instead of scanned for nobody.
     private val cancelledPhotoScans: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet()
@@ -742,6 +746,10 @@ class MainActivity : FlutterActivity() {
                         "thorough" to FaceSettings.thorough(applicationContext),
                         "refine" to FaceSettings.refine(applicationContext),
                         "deferredPhotos" to faces.store.deferredPhotoCount(),
+                        "scanVideos" to FaceSettings.scanVideos(applicationContext),
+                        "videoDensity" to FaceSettings.videoDensity(applicationContext),
+                        "videos" to faces.store.videoCount(),
+                        "videosTotal" to ScanEngineHolder.embeddingEngine(applicationContext).indexedVideos().size,
                         "tuning" to FaceTuner.summary(applicationContext, faces.engine.store),
                         "strictness" to faces.clusterer.strictness(),
                         "modelsDir" to faces.engine.store.modelsDir.absolutePath,
@@ -796,16 +804,16 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
-                // Photos in the shape the search results grid already reads.
+                // Photos and videos in the shape the search results grid already reads.
                 "personPhotos" -> faceTask(result) {
                     val id = (call.argument<Number>("personId") ?: 0).toLong()
-                    faces.store.personPhotos(id).map { (uri, _) ->
+                    faces.store.personMedia(id).map { m ->
                         mapOf(
-                            "path" to uri,
+                            "path" to m.uri,
                             "score" to 1.0,
-                            "isVideo" to false,
-                            "videoUri" to "",
-                            "timestampMs" to 0L,
+                            "isVideo" to m.isVideo,
+                            "videoUri" to (if (m.isVideo) m.uri else ""),
+                            "timestampMs" to m.tsMs,
                         )
                     }
                 }
@@ -815,13 +823,13 @@ class MainActivity : FlutterActivity() {
                 "peoplePhotos" -> faceTask(result) {
                     val ids = (call.argument<List<Number>>("personIds") ?: emptyList()).map { it.toLong() }
                     val mode = call.argument<String>("mode") ?: "together"
-                    faces.store.peoplePhotos(ids, mode).map { (uri, _) ->
+                    faces.store.peopleMedia(ids, mode).map { m ->
                         mapOf(
-                            "path" to uri,
+                            "path" to m.uri,
                             "score" to 1.0,
-                            "isVideo" to false,
-                            "videoUri" to "",
-                            "timestampMs" to 0L,
+                            "isVideo" to m.isVideo,
+                            "videoUri" to (if (m.isVideo) m.uri else ""),
+                            "timestampMs" to m.tsMs,
                         )
                     }
                 }
@@ -834,12 +842,171 @@ class MainActivity : FlutterActivity() {
                 "personFaces" -> faceTask(result) {
                     val id = (call.argument<Number>("personId") ?: 0).toLong()
                     faces.store.personFaces(id).map { f ->
-                        mapOf("faceId" to f.faceId, "good" to f.good, "photoUri" to f.photoUri)
+                        mapOf("faceId" to f.faceId, "good" to f.good, "photoUri" to f.photoUri, "isVideo" to f.isVideo)
                     }
                 }
 
                 // The people in one photo, for tapping their faces in the viewer (hidden people stay out).
-                // A photo the scan hasn't reached yet is analysed on the spot (one photo is cheap).
+                // Who is in the frame at [positionMs] of a video (looked up now). The faces that match people
+                // are stored as that frame of the video, so tapping them later is instant.
+                "videoFaces" -> photoFacesExecutor.execute {
+                    try {
+                        val uri = call.argument<String>("uri") ?: ""
+                        val positionMs = (call.argument<Number>("positionMs") ?: 0).toLong()
+                        val token = call.argument<Number>("token")?.toLong()
+                        if (token != null && cancelledPhotoScans.remove(token)) {
+                            runOnUiThread { result.success(emptyList<Any>()) }
+                            return@execute
+                        }
+                        val key = "$uri#$positionMs"
+                        val progress = PhotoScanProgress()
+                        faces.scanner.photoProgress[key] = progress
+                        val identities = try {
+                            faces.videoScanner.identifyFrame(uri, positionMs, progress)
+                        } finally {
+                            faces.scanner.photoProgress.remove(key)
+                        } ?: emptyList()
+                        // Named in this video now: they join its list of people, and their faces are stored.
+                        try {
+                            faces.store.recordVideoSeen(uri, positionMs, identities.map { it.personId }.toSet())
+                            // And kept as real faces of that frame, so tapping them later is instant.
+                            faces.videoScanner.storeLooked(uri, positionMs, identities)
+                        } catch (_: Throwable) {
+                        }
+                        val out = identities.mapIndexedNotNull { i, f ->
+                            val p = faces.store.personSummary(f.personId)
+                            if (p == null || p.hidden) {
+                                null
+                            } else {
+                                mapOf(
+                                    // Not a stored face: a made-up id, just to tell them apart on screen.
+                                    "faceId" to -(i + 1).toLong(),
+                                    "left" to f.left, "top" to f.top, "right" to f.right, "bottom" to f.bottom,
+                                    "photoW" to f.frameW, "photoH" to f.frameH,
+                                    "person" to mapOf(
+                                        "id" to p.id,
+                                        "name" to p.name,
+                                        "hidden" to p.hidden,
+                                        "faceCount" to p.faceCount,
+                                        "photoCount" to p.photoCount,
+                                        "coverFaceId" to p.coverFaceId,
+                                    ),
+                                )
+                            }
+                        }
+                        runOnUiThread { result.success(out) }
+                    } catch (e: Throwable) {
+                        runOnUiThread { result.error("VIDEO_FACES_FAILED", e.message ?: e.toString(), null) }
+                    }
+                }
+
+                // The faces the scan stored for the frame at exactly [tsMs]: they can be shown at once
+                // (no new look) when [exact] says the scan read exact frames.
+                "videoFrameFaces" -> faceTask(result) {
+                    val uri = call.argument<String>("uri") ?: ""
+                    val tsMs = (call.argument<Number>("tsMs") ?: 0).toLong()
+                    val (exact, stored) = faces.store.videoFrameFaces(uri, tsMs)
+                    val summaries = HashMap<Long, dev.twentyonevision.app.embedder.faces.PersonSummary?>()
+                    val list = stored.mapNotNull { f ->
+                        val p = summaries.getOrPut(f.personId) { faces.store.personSummary(f.personId) }
+                        if (p == null || p.hidden) {
+                            null
+                        } else {
+                            mapOf(
+                                "faceId" to f.faceId,
+                                "left" to f.boxL, "top" to f.boxT, "right" to f.boxR, "bottom" to f.boxB,
+                                "photoW" to f.photoW, "photoH" to f.photoH,
+                                "person" to mapOf(
+                                    "id" to p.id,
+                                    "name" to p.name,
+                                    "hidden" to p.hidden,
+                                    "faceCount" to p.faceCount,
+                                    "photoCount" to p.photoCount,
+                                    "coverFaceId" to p.coverFaceId,
+                                ),
+                            )
+                        }
+                    }
+                    mapOf("exact" to exact, "faces" to list)
+                }
+
+                // The people seen in a video (found by a scan) and when: for the strip and the markers
+                // under the video. Unhidden people known elsewhere, or seen at 2+ moments of this video.
+                "videoPeople" -> faceTask(result) {
+                    val uri = call.argument<String>("uri") ?: ""
+                    val times = LinkedHashMap<Long, MutableList<Long>>()
+                    // The moments where a face of theirs is stored (a position to point at).
+                    val stored = HashMap<Long, MutableList<Long>>()
+                    for ((personId, ts) in faces.store.videoSightings(uri)) {
+                        times.getOrPut(personId) { ArrayList() }.add(ts)
+                        stored.getOrPut(personId) { ArrayList() }.add(ts)
+                    }
+                    // Also the people found by looking at single frames: they were named on purpose,
+                    // so they count without needing two moments.
+                    val looked = HashSet<Long>()
+                    for ((personId, ts) in faces.store.videoSeen(uri)) {
+                        times.getOrPut(personId) { ArrayList() }.add(ts)
+                        looked += personId
+                    }
+                    times.mapNotNull { (personId, list) ->
+                        val p = faces.store.personSummary(personId)
+                        // Someone known elsewhere, or seen in at least two moments of this video (one
+                        // stray frame is more likely a bystander).
+                        val enough = p != null &&
+                            (p.photoCount >= dev.twentyonevision.app.embedder.faces.FaceStore.MIN_PHOTOS_TO_SHOW ||
+                                list.distinct().size >= 2 || personId in looked)
+                        if (p == null || p.hidden || !enough) {
+                            null
+                        } else {
+                            mapOf(
+                                "person" to mapOf(
+                                    "id" to p.id,
+                                    "name" to p.name,
+                                    "hidden" to p.hidden,
+                                    "faceCount" to p.faceCount,
+                                    "photoCount" to p.photoCount,
+                                    "coverFaceId" to p.coverFaceId,
+                                ),
+                                "times" to list.distinct().sorted(),
+                                "stored" to (stored[personId] ?: emptyList<Long>()).distinct().sorted(),
+                            )
+                        }
+                    }
+                }
+
+                // Whether a video can be scanned and has been: "needs", "done" or "unavailable"
+                // (not in the search index, or the face models aren't ready).
+                // Also which search level a tap would use (looser when the last look found nothing) and
+                // how many faces the last look kept.
+                "videoScanState" -> faceTask(result) {
+                    val plan = faces.scanner.videoScanPlan(call.argument<String>("uri") ?: "")
+                    mapOf("state" to plan.state, "level" to plan.level, "lastFaces" to plan.lastFaces)
+                }
+
+                // A video the user asked to scan: scan it now if it hasn't been (see FaceScanner.scanVideoNow).
+                // Progress is readable meanwhile with photoScanStatus("video:<uri>").
+                "scanVideoFaces" -> videoScanExecutor.execute {
+                    try {
+                        val uri = call.argument<String>("uri") ?: ""
+                        val token = call.argument<Number>("token")?.toLong()
+                        if (token != null && cancelledPhotoScans.remove(token)) {
+                            runOnUiThread { result.success(mapOf("scanned" to false, "level" to 0, "faces" to 0)) }
+                            return@execute
+                        }
+                        val scanned = try {
+                            faces.scanner.scanVideoNow(uri)
+                        } catch (e: Throwable) {
+                            android.util.Log.w("MainActivity", "scanning video $uri failed: ${e.message}")
+                            dev.twentyonevision.app.embedder.faces.FaceScanner.VideoScanResult(false, 0, 0)
+                        }
+                        runOnUiThread {
+                            result.success(mapOf("scanned" to scanned.scanned, "level" to scanned.level, "faces" to scanned.faces))
+                        }
+                    } catch (e: Throwable) {
+                        runOnUiThread { result.error("SCAN_VIDEO_FAILED", e.message ?: e.toString(), null) }
+                    }
+                }
+
                 "cancelPhotoFaces" -> {
                     (call.argument<Number>("token"))?.let {
                         if (cancelledPhotoScans.size > 200) cancelledPhotoScans.clear()
@@ -893,7 +1060,10 @@ class MainActivity : FlutterActivity() {
                 // How far the scan of a photo opened in the viewer has got (null when none is running).
                 "photoScanStatus" -> faceTask(result) {
                     faces.scanner.photoProgress[call.argument<String>("uri") ?: ""]?.let { p ->
-                        mapOf("stage" to p.stage, "faces" to p.faces, "total" to p.total, "more" to p.more)
+                        mapOf(
+                            "stage" to p.stage, "faces" to p.faces, "total" to p.total, "more" to p.more,
+                            "video" to p.video, "step" to p.step, "steps" to p.steps, "relax" to p.relax,
+                        )
                     }
                 }
 
@@ -1023,6 +1193,12 @@ class MainActivity : FlutterActivity() {
                         if (it in listOf(FaceClusterConfig.STRICT, FaceClusterConfig.BALANCED, FaceClusterConfig.LOOSE)) {
                             faces.clusterer.setStrictness(it)
                         }
+                    }
+                    call.argument<String>("videoDensity")?.let { FaceSettings.setVideoDensity(applicationContext, it) }
+                    call.argument<Boolean>("scanVideos")?.let {
+                        FaceSettings.setScanVideos(applicationContext, it)
+                        // Turning it on has work to do right away.
+                        if (it) FaceScanWorker.enqueueIfNeeded(applicationContext)
                     }
                     true
                 }

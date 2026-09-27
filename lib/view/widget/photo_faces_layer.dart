@@ -83,21 +83,21 @@ void _light(Canvas canvas, Offset at, double radius, Color colour, double alpha)
 /// reads as a small amoeba rather than a ring. [phase] runs 0..1 and the motion
 /// loops seamlessly (every wave turns a whole number of times per loop);
 /// [wobble] > 0 exaggerates it (used while the outline settles in).
-double _blobRadius(double angle, double radius, double phase, double wobble, [double offset = 0]) {
+double _blobRadius(double angle, double radius, double phase, double wobble, [double offset = 0, double amp = 1]) {
   final t = phase * 2 * math.pi + offset;
   final wave = 0.055 * math.sin(2 * angle + t) +
       0.045 * math.sin(3 * angle - 2 * t + 1.3) +
       0.030 * math.sin(5 * angle + t + 2.6) +
       0.022 * math.sin(4 * angle - t + 0.7);
-  return radius * (1 + wave * (1 + 1.6 * wobble));
+  return radius * (1 + wave * (1 + 1.6 * wobble) * amp);
 }
 
 Path _blobPath(Offset center, double radius, double phase, double wobble,
-    {double offset = 0, double start = -math.pi / 2, int steps = 140}) {
+    {double offset = 0, double start = -math.pi / 2, int steps = 140, double amp = 1}) {
   final path = Path();
   for (var i = 0; i <= steps; i++) {
     final a = start + i / steps * 2 * math.pi;
-    final r = _blobRadius(a, radius, phase, wobble, offset);
+    final r = _blobRadius(a, radius, phase, wobble, offset, amp);
     final point = center + Offset(math.cos(a), math.sin(a)) * r;
     if (i == 0) {
       path.moveTo(point.dx, point.dy);
@@ -119,12 +119,42 @@ class _Roll {
         tint = r.nextInt(_ringColors.length - 1),
         lag = r.nextDouble() * 0.12;
 
+  _Roll.fixed(RingEntry e)
+      : offset = e.offset,
+        start = e.start,
+        dir = e.dir,
+        sparkleAngle = 0,
+        tint = e.tint,
+        lag = 0;
+
   final double offset;
   final double start;
   final double dir;
   final double sparkleAngle;
   final int tint; // which colour the outline starts on
   final double lag; // fraction of the hint's length this face waits before starting
+}
+
+/// The look of one outline - where its edge starts, which way it turns, its colours, the shape
+/// its waves begin in. The flight and the outline it lands in share one, so the outline picks up
+/// exactly where the flight leaves off: they are the same band.
+class RingEntry {
+  const RingEntry({required this.offset, required this.start, required this.dir, required this.tint});
+
+  factory RingEntry.random() {
+    final r = math.Random();
+    return RingEntry(
+      offset: r.nextDouble() * 2 * math.pi,
+      start: r.nextDouble() * 2 * math.pi,
+      dir: r.nextBool() ? 1.0 : -1.0,
+      tint: r.nextInt(_ringColors.length - 1),
+    );
+  }
+
+  final double offset;
+  final double start;
+  final double dir;
+  final int tint;
 }
 
 /// Paints whatever [draw] does, and repaints whenever [repaint] fires - so an animation
@@ -139,6 +169,34 @@ class _LivePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _LivePainter old) => true;
+}
+
+/// Where a head is inside a picture shown "contain"-fitted in [size]: its centre and radius.
+class HeadSpot {
+  const HeadSpot(this.center, this.radius);
+
+  final Offset center;
+  final double radius;
+}
+
+/// The same geometry the outline uses (around the whole head, a little bigger and higher than
+/// the face box), for a picture that isn't zoomed. Null if the picture's size isn't known.
+HeadSpot? headSpotFor(PhotoFace f, Size size) {
+  if (f.photoW <= 0 || f.photoH <= 0 || size.isEmpty) return null;
+  final aspect = f.photoW / f.photoH;
+  final double w, h;
+  if (size.width / size.height > aspect) {
+    h = size.height;
+    w = h * aspect;
+  } else {
+    w = size.width;
+    h = w / aspect;
+  }
+  final origin = Offset((size.width - w) / 2, (size.height - h) / 2);
+  final faceW = (f.right - f.left) * w;
+  final faceH = (f.bottom - f.top) * h;
+  final centre = origin + Offset((f.left + f.right) / 2 * w, (f.top + f.bottom) / 2 * h - faceH * 0.06);
+  return HeadSpot(centre, math.max(faceW, faceH) * 0.5 * 1.4);
 }
 
 /// Where a face sits on screen right now: the centre and radius of a circle
@@ -165,7 +223,16 @@ class PhotoFacesLayer extends StatefulWidget {
     required this.selected,
     required this.onSelect,
     required this.onOpen,
+    this.bottomInset = 0,
+    this.entry,
   });
+
+  /// Set when the face is already picked as this appears and a flight is landing on it: the
+  /// outline then starts fully drawn, in the flight's own look, instead of drawing itself in.
+  final RingEntry? entry;
+
+  /// Extra room kept clear along the bottom (the caption sits above it): a video's controls.
+  final double bottomInset;
 
   final List<PhotoFace> faces;
   final TransformationController transform;
@@ -190,11 +257,25 @@ class _PhotoFacesLayerState extends State<PhotoFacesLayer> with TickerProviderSt
 
   final math.Random _rng = math.Random();
   _Roll _selRoll = _Roll(math.Random());
+  bool _ringSettled = false; // the outline arrived from a flight: nothing to draw in
   List<_Roll> _hintRolls = const [];
 
   @override
   void initState() {
     super.initState();
+    // Shown with a face already picked (e.g. from the video's people strip): it draws
+    // round that head straight away, no hint first.
+    final initial = widget.selected;
+    if (initial != null) {
+      _shown = initial;
+      if (widget.entry != null) {
+        _selRoll = _Roll.fixed(widget.entry!);
+        _ringSettled = true;
+      }
+      _hint.value = 1;
+      _enter.forward();
+      _spin.repeat();
+    }
     // Once the photo has settled, the faces are faintly traced and each gets a small
     // sparkle - the sign that it can be tapped - and a line says what it means.
     // Different every time, and gone again within a few seconds.
@@ -217,7 +298,15 @@ class _PhotoFacesLayerState extends State<PhotoFacesLayer> with TickerProviderSt
     }
     if (now != null) {
       _shown = now;
-      _selRoll = _Roll(_rng);
+      // Picked from outside with a flight landing on it: the outline is the flight's own band.
+      final entry = widget.entry;
+      if (entry != null && old.selected == null) {
+        _selRoll = _Roll.fixed(entry);
+        _ringSettled = true;
+      } else {
+        _ringSettled = false;
+        _selRoll = _Roll(_rng);
+      }
       _hint.stop();
       _hint.value = 1; // the ripple is done once you've found it
       _enter.forward(from: 0);
@@ -327,6 +416,7 @@ class _PhotoFacesLayerState extends State<PhotoFacesLayer> with TickerProviderSt
                         progress: _enter.value,
                         spin: _spin.value * 2 * math.pi,
                         roll: _selRoll,
+                        settled: _ringSettled,
                       ).paint(canvas, size);
                     },
                   ),
@@ -398,7 +488,7 @@ class _PhotoFacesLayerState extends State<PhotoFacesLayer> with TickerProviderSt
     return Positioned(
       left: 0,
       right: 0,
-      bottom: MediaQuery.of(context).padding.bottom + AppSpacing.xxl,
+      bottom: MediaQuery.of(context).padding.bottom + AppSpacing.xxl + widget.bottomInset,
       child: IgnorePointer(
         child: Center(
           child: Opacity(
@@ -728,7 +818,11 @@ class _RingPainter extends CustomPainter {
     required this.progress,
     required this.spin,
     required this.roll,
+    this.settled = false,
   });
+
+  /// The band is already whole (it came from a flight): only the dimming and the lights fade in.
+  final bool settled;
 
   final Offset center;
   final double radius;
@@ -743,7 +837,9 @@ class _RingPainter extends CustomPainter {
 
     final loop = spin / (2 * math.pi);
     final phase = roll.dir > 0 ? loop : 1 - loop;
-    final wobble = 1 - t; // wobbles most while it settles in
+    // The band's own progress: from a flight it is complete from the first frame.
+    final rt = settled ? 1.0 : t;
+    final wobble = 1 - rt; // wobbles most while it settles in
 
     final hole = _blobPath(center, radius * 1.06, phase, wobble, offset: roll.offset, start: roll.start);
     final everything = Path()..addRect(Offset.zero & size);
@@ -753,19 +849,19 @@ class _RingPainter extends CustomPainter {
     );
 
     // The outline settles in from a little wider.
-    final r = radius * (1 + 0.14 * (1 - t));
+    final r = radius * (1 + 0.14 * (1 - rt));
     final outline = _blobPath(center, r, phase, wobble, offset: roll.offset, start: roll.start);
 
     // It draws itself round the head.
     Path drawn = outline;
-    if (t < 1) {
+    if (rt < 1) {
       drawn = Path();
       for (final metric in outline.computeMetrics()) {
-        drawn.addPath(metric.extractPath(0, metric.length * t), Offset.zero);
+        drawn.addPath(metric.extractPath(0, metric.length * rt), Offset.zero);
       }
     }
     _glowStroke(canvas, drawn, center, r, roll.start + roll.dir * spin * 1.5, roll.tint,
-        alpha: t, line: 2.8, glow: 1.3);
+        alpha: rt, line: 2.8, glow: 1.3);
 
     // Three tiny lights drifting along the edge.
     for (var k = 0; k < 3; k++) {
@@ -861,9 +957,12 @@ class _HintPainter extends CustomPainter {
 /// they start, how fast and which way they go are rolled fresh each time. When the search
 /// ends it fades away and the faces it found take over.
 class PhotoScanGlow extends StatefulWidget {
-  const PhotoScanGlow({super.key, required this.visible, required this.message});
+  const PhotoScanGlow({super.key, required this.visible, required this.message, this.bottomInset = 0});
 
   final bool visible;
+
+  /// Extra room kept clear along the bottom (a video's controls).
+  final double bottomInset;
 
   /// What the scan is doing right now, in a few words ("Found 12 faces · identifying").
   final String message;
@@ -962,7 +1061,7 @@ class _PhotoScanGlowState extends State<PhotoScanGlow> with TickerProviderStateM
           Positioned(
             left: 0,
             right: 0,
-            bottom: MediaQuery.of(context).padding.bottom + AppSpacing.xxl,
+            bottom: MediaQuery.of(context).padding.bottom + AppSpacing.xxl + widget.bottomInset,
             child: TickerMode(
               enabled: _pillOn,
               child: AnimatedOpacity(
@@ -1030,4 +1129,102 @@ class _EdgeGlowPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _EdgeGlowPainter old) => old.t != t || old.orbs != orbs || old.fade != fade;
+}
+
+/// A face travelling to where it is in the picture: it sets off as a circle around their photo,
+/// and on the way the circle grows to the size of the head and its edge starts to swell and
+/// dip - it becomes the same living band the outline is - while the photo inside dissolves to
+/// show the real head. Meant to be given to the outline as it lands.
+class FaceFlight {
+  const FaceFlight({
+    required this.faceId,
+    required this.from,
+    required this.to,
+    required this.endRadius,
+    required this.entry,
+  });
+
+  /// The look the band ends in - the outline that takes over is given the same one.
+  final RingEntry entry;
+
+  final int faceId;
+  final Offset from; // screen coordinates
+  final Offset to;
+  final double endRadius;
+}
+
+class FaceFlightOverlay extends StatelessWidget {
+  const FaceFlightOverlay({super.key, required this.flight, required this.t});
+
+  final FaceFlight flight;
+
+  /// 0..1. The journey is 0..[landingAt]; after it the band melts into the outline that has taken over.
+  final double t;
+
+  /// Where the journey ends and the hand-over begins.
+  static const double landingAt = 0.86;
+
+  @override
+  Widget build(BuildContext context) {
+    final travel = (t / landingAt).clamp(0.0, 1.0);
+    final e = Curves.easeInOutCubic.transform(travel);
+    // A gentle arc: up and over, rather than a straight line.
+    final control = Offset.lerp(flight.from, flight.to, 0.5)! + const Offset(0, -60);
+    final at = Offset.lerp(Offset.lerp(flight.from, control, e), Offset.lerp(control, flight.to, e), e)!;
+    final radius = 22 + (flight.endRadius - 22) * Curves.easeOut.transform(e);
+    final amp = Curves.easeIn.transform(e); // 0 = a true circle, 1 = the living band
+    final landing = ((t - landingAt) / (1 - landingAt)).clamp(0.0, 1.0);
+    final ringAlpha = 1 - Curves.easeIn.transform(landing);
+    final photo = (1 - Curves.easeIn.transform(((e - 0.45) / 0.55).clamp(0.0, 1.0))).clamp(0.0, 1.0);
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        CustomPaint(painter: _FlightPainter(at, radius, amp, ringAlpha, e, flight.entry)),
+        if (photo > 0)
+          Positioned(
+            left: at.dx - radius * 0.86,
+            top: at.dy - radius * 0.86,
+            width: radius * 1.72,
+            height: radius * 1.72,
+            child: Opacity(
+              opacity: photo,
+              child: ClipOval(
+                child: FittedBox(
+                  fit: BoxFit.cover,
+                  child: SizedBox(width: 56, height: 56, child: FaceAvatar(faceId: flight.faceId, size: 56)),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _FlightPainter extends CustomPainter {
+  _FlightPainter(this.at, this.radius, this.amp, this.alpha, this.e, this.entry);
+
+  final Offset at;
+  final double radius;
+  final double amp;
+  final double alpha;
+  final double e; // 0..1 along the journey
+  final RingEntry entry;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (alpha <= 0) return;
+    // Exactly what the outline draws when it takes over (same shape, start, colours, weight), with
+    // the swell of the waves growing from nothing - a circle - on the way.
+    final phase = entry.dir > 0 ? 0.0 : 1.0;
+    final path = _blobPath(at, radius, phase, 0, offset: entry.offset, start: entry.start, amp: amp);
+    // The colours turn a little as it travels, and are at rest (the outline's own start) on landing.
+    final rotation = entry.start + entry.dir * (1 - e) * 4.0;
+    _glowStroke(canvas, path, at, radius, rotation, entry.tint, alpha: alpha, line: 2.8, glow: 1.3);
+  }
+
+  @override
+  bool shouldRepaint(covariant _FlightPainter old) =>
+      old.at != at || old.radius != radius || old.amp != amp || old.alpha != alpha || old.e != e;
 }

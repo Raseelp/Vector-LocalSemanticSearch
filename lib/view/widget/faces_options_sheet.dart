@@ -9,8 +9,13 @@ import 'package:twentyonevision/view/merge_history_screen.dart';
 import 'package:twentyonevision/view/widget/confirm_dialog.dart';
 import 'package:twentyonevision/view/widget/face_widgets.dart';
 
-/// Options for face grouping: which models run, how strict grouping is, and
-/// the maintenance actions.
+/// Options for the Faces tab: whether videos are scanned, and the maintenance actions.
+///
+/// The models are listed in Settings. The expert controls - grouping strictness, the second pass
+/// for small and blurry faces, "search harder for small faces", the speed test, regrouping and the
+/// model picker - are not shown: their defaults give the best results. They all still exist (in
+/// [FacesController] and on the phone); [_expertRows] below is the whole set of controls, ready
+/// to be put back into the list if they are ever needed.
 Future<void> showFacesOptionsSheet(BuildContext context) {
   return showFacesSheet<void>(
     context,
@@ -19,184 +24,61 @@ Future<void> showFacesOptionsSheet(BuildContext context) {
   );
 }
 
-class _OptionsBody extends StatefulWidget {
+class _OptionsBody extends StatelessWidget {
   const _OptionsBody();
 
   @override
-  State<_OptionsBody> createState() => _OptionsBodyState();
-}
-
-class _OptionsBodyState extends State<_OptionsBody> {
-  final FacesController _faces = Get.find<FacesController>();
-  FaceModels? _models;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadModels();
-  }
-
-  Future<void> _loadModels() async {
-    try {
-      final models = await _faces.models();
-      if (mounted) setState(() => _models = models);
-    } catch (_) {}
-  }
-
-  void _chooseModel(FaceModelInfo model) {
-    if (model.selected) return;
-    // The detector is safe to swap (a rescan isn't forced); a different
-    // recognition model makes every stored face unusable, so it restarts the
-    // grouping - which loses names - and asks first.
-    if (model.kind == 'detector') {
-      _faces.selectModel(model).then((_) => _loadModels());
-      return;
-    }
-    showConfirmDialog(
-      context,
-      title: 'Switch recognition model?',
-      message:
-          'Faces are compared using this model, so everything is grouped again from scratch. '
-          'Names you gave will be lost.',
-      confirmLabel: 'Switch',
-      onConfirm: () => _faces.selectModel(model).then((_) => _loadModels()),
-    );
-  }
-
-  @override
   Widget build(BuildContext context) {
+    final faces = Get.find<FacesController>();
     final textTheme = Theme.of(context).textTheme;
 
     return GetBuilder<FacesController>(
-      builder: (faces) {
+      builder: (_) {
         final status = faces.status;
-        final models = _models;
-
-        Widget chips(String kind) {
-          final list = models?.ofKind(kind) ?? const <FaceModelInfo>[];
-          if (list.isEmpty) {
-            return Text('none installed', style: textTheme.bodySmall?.copyWith(color: AppColors.danger));
-          }
-          return Wrap(
-            spacing: AppSpacing.xs,
-            runSpacing: AppSpacing.xs,
-            children: [
-              for (final m in list)
-                ChoiceChip(
-                  label: Text('${m.name}  ${(m.sizeBytes / 1048576).toStringAsFixed(0)} MB'),
-                  selected: m.selected,
-                  onSelected: (_) => _chooseModel(m),
-                ),
-            ],
-          );
-        }
 
         return ListView(
           shrinkWrap: true,
           padding: EdgeInsets.zero,
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(AppSpacing.base, AppSpacing.base, AppSpacing.base, AppSpacing.xs),
-              child: Text('Models', style: textTheme.labelMedium?.copyWith(color: AppColors.ink48)),
+            SwitchListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
+              title: Text('Find people in videos', style: textTheme.bodyMedium),
+              subtitle: Text(
+                'After the photos, a few frames of each video are checked. Takes a while and uses battery. '
+                'Turned off, you can still scan any single video from its own screen.',
+                style: textTheme.bodySmall?.copyWith(color: AppColors.ink48),
+              ),
+              value: status.scanVideos,
+              onChanged: (v) => faces.setScanVideos(v),
             ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Finds faces', style: textTheme.bodySmall),
-                  const SizedBox(height: AppSpacing.xs),
-                  chips('detector'),
-                  const SizedBox(height: AppSpacing.md),
-                  Text('Tells people apart', style: textTheme.bodySmall),
-                  const SizedBox(height: AppSpacing.xs),
-                  chips('embedder'),
-                  if (models != null) ...[
-                    const SizedBox(height: AppSpacing.sm),
+            if (status.scanVideos)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(AppSpacing.base, 0, AppSpacing.base, AppSpacing.sm),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: double.infinity,
+                      child: SegmentedButton<String>(
+                        showSelectedIcon: false,
+                        segments: const [
+                          ButtonSegment(value: 'fast', label: Text('Fast')),
+                          ButtonSegment(value: 'balanced', label: Text('Balanced')),
+                          ButtonSegment(value: 'thorough', label: Text('Thorough')),
+                        ],
+                        selected: {status.videoDensity},
+                        onSelectionChanged: (s) => faces.setVideoDensity(s.first),
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
                     Text(
-                      'To try another model, copy its .onnx file into ${models.dir} and reopen this.',
+                      'How many frames of each video are checked. Applies to videos not scanned yet - '
+                      '"Scan all photos again" redoes the rest.',
                       style: textTheme.bodySmall?.copyWith(color: AppColors.ink48, fontSize: 11, height: 1.4),
                     ),
                   ],
-                ],
+                ),
               ),
-            ),
-            const SizedBox(height: AppSpacing.base),
-            const Divider(height: 1, color: AppColors.hairline),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(AppSpacing.base, AppSpacing.base, AppSpacing.base, AppSpacing.xs),
-              child: Text('Grouping', style: textTheme.labelMedium?.copyWith(color: AppColors.ink48)),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: double.infinity,
-                    child: SegmentedButton<String>(
-                      showSelectedIcon: false,
-                      segments: const [
-                        ButtonSegment(value: 'strict', label: Text('Strict')),
-                        ButtonSegment(value: 'balanced', label: Text('Balanced')),
-                        ButtonSegment(value: 'loose', label: Text('Loose')),
-                      ],
-                      selected: {status.strictness},
-                      onSelectionChanged: (s) => _faces.setStrictness(s.first),
-                    ),
-                  ),
-                  const SizedBox(height: AppSpacing.xs),
-                  Text(
-                    'Strict keeps look-alikes apart but may split one person in two. '
-                    'Loose joins more, but may mix people up. Regroup to apply.',
-                    style: textTheme.bodySmall?.copyWith(color: AppColors.ink48, fontSize: 11, height: 1.4),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            SheetRow(
-              icon: Icons.auto_fix_high_rounded,
-              label: 'Regroup now',
-              subtitle: 'Names and your edits are kept',
-              onTap: () {
-                Navigator.of(context).pop();
-                _faces.regroup();
-              },
-            ),
-            const Divider(height: 1, color: AppColors.dividerSoft),
-            SwitchListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
-              title: Text('Recognise small and blurry faces', style: textTheme.bodyMedium),
-              subtitle: Text(
-                'A second pass after the clear faces are done, matching the rest to the same people. '
-                'Turn off to finish sooner - those faces just won\'t be matched.',
-                style: textTheme.bodySmall?.copyWith(color: AppColors.ink48),
-              ),
-              value: status.refine,
-              onChanged: (v) => _faces.setRefine(v),
-            ),
-            const Divider(height: 1, color: AppColors.dividerSoft),
-            SwitchListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
-              title: Text('Search harder for small faces', style: textTheme.bodyMedium),
-              subtitle: Text(
-                'Slower. Applies to photos scanned from now on - use "Scan again" for older ones.',
-                style: textTheme.bodySmall?.copyWith(color: AppColors.ink48),
-              ),
-              value: status.thorough,
-              onChanged: (v) => _faces.setThorough(v),
-            ),
-            const Divider(height: 1, color: AppColors.dividerSoft),
-            SheetRow(
-              icon: Icons.speed_rounded,
-              label: 'Speed test',
-              subtitle: status.tuning ?? 'Runs once, at the start of the next scan',
-              onTap: () {
-                Navigator.of(context).pop();
-                _faces.retune();
-              },
-            ),
             const Divider(height: 1, color: AppColors.dividerSoft),
             SheetRow(
               icon: Icons.undo_rounded,
@@ -211,7 +93,7 @@ class _OptionsBodyState extends State<_OptionsBody> {
             SheetRow(
               icon: Icons.visibility_off_outlined,
               label: 'Hidden people',
-              subtitle: _faces.hiddenPeople.isEmpty ? 'None' : '${_faces.hiddenPeople.length} hidden',
+              subtitle: faces.hiddenPeople.isEmpty ? 'None' : '${faces.hiddenPeople.length} hidden',
               onTap: () {
                 Navigator.of(context).pop();
                 Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HiddenPeopleScreen()));
@@ -230,7 +112,7 @@ class _OptionsBodyState extends State<_OptionsBody> {
                 confirmLabel: 'Scan again',
                 onConfirm: () {
                   Navigator.of(context).pop();
-                  _faces.rescanEverything();
+                  faces.rescanEverything();
                 },
               ),
             ),
@@ -238,5 +120,119 @@ class _OptionsBodyState extends State<_OptionsBody> {
         );
       },
     );
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // The controls that are not shown (their defaults are the best settings). Everything they call
+  // still works: FacesController.setStrictness / setRefine / setThorough / retune / regroup /
+  // models / selectModel. To bring any back, add these rows to the list above, e.g.
+  //   ..._expertRows(context, faces, status, models)
+  // ---------------------------------------------------------------------------------------------
+
+  // ignore: unused_element
+  List<Widget> _expertRows(BuildContext context, FacesController faces, FaceStatus status, FaceModels? models) {
+    final textTheme = Theme.of(context).textTheme;
+
+    Widget chips(String kind) {
+      final list = models?.ofKind(kind) ?? const <FaceModelInfo>[];
+      if (list.isEmpty) {
+        return Text('none installed', style: textTheme.bodySmall?.copyWith(color: AppColors.danger));
+      }
+      return Wrap(
+        spacing: AppSpacing.xs,
+        runSpacing: AppSpacing.xs,
+        children: [
+          for (final m in list)
+            ChoiceChip(
+              label: Text('${m.name}  ${(m.sizeBytes / 1048576).toStringAsFixed(0)} MB'),
+              selected: m.selected,
+              onSelected: (_) => faces.selectModel(m),
+            ),
+        ],
+      );
+    }
+
+    return [
+      // Sorts the automatic groups again from every face known now (names and hand edits are kept).
+      SheetRow(
+        icon: Icons.auto_fix_high_rounded,
+        label: 'Regroup now',
+        subtitle: 'Sorts the faces into people again. Names and your edits are kept',
+        onTap: () {
+          Navigator.of(context).pop();
+          faces.regroup();
+        },
+      ),
+      // Models (the detector and the recognition model).
+      Padding(
+        padding: const EdgeInsets.fromLTRB(AppSpacing.base, AppSpacing.base, AppSpacing.base, AppSpacing.xs),
+        child: Text('Models', style: textTheme.labelMedium?.copyWith(color: AppColors.ink48)),
+      ),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Finds faces', style: textTheme.bodySmall),
+            const SizedBox(height: AppSpacing.xs),
+            chips('detector'),
+            const SizedBox(height: AppSpacing.md),
+            Text('Tells people apart', style: textTheme.bodySmall),
+            const SizedBox(height: AppSpacing.xs),
+            chips('embedder'),
+          ],
+        ),
+      ),
+      // How strict the grouping is (applied by "Regroup now").
+      Padding(
+        padding: const EdgeInsets.fromLTRB(AppSpacing.base, AppSpacing.base, AppSpacing.base, AppSpacing.xs),
+        child: Text('Grouping', style: textTheme.labelMedium?.copyWith(color: AppColors.ink48)),
+      ),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
+        child: SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<String>(
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(value: 'strict', label: Text('Strict')),
+              ButtonSegment(value: 'balanced', label: Text('Balanced')),
+              ButtonSegment(value: 'loose', label: Text('Loose')),
+            ],
+            selected: {status.strictness},
+            onSelectionChanged: (s) => faces.setStrictness(s.first),
+          ),
+        ),
+      ),
+      SwitchListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
+        title: Text('Recognise small and blurry faces', style: textTheme.bodyMedium),
+        subtitle: Text(
+          'A second pass after the clear faces are done, matching the rest to the same people.',
+          style: textTheme.bodySmall?.copyWith(color: AppColors.ink48),
+        ),
+        value: status.refine,
+        onChanged: (v) => faces.setRefine(v),
+      ),
+      SwitchListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
+        title: Text('Search harder for small faces', style: textTheme.bodyMedium),
+        subtitle: Text(
+          'Slower. Applies to photos scanned from now on.',
+          style: textTheme.bodySmall?.copyWith(color: AppColors.ink48),
+        ),
+        value: status.thorough,
+        onChanged: (v) => faces.setThorough(v),
+      ),
+      SheetRow(
+        icon: Icons.speed_rounded,
+        label: 'Speed test',
+        subtitle: status.tuning ?? 'Runs once, at the start of the next scan',
+        onTap: () {
+          Navigator.of(context).pop();
+          faces.retune();
+        },
+      ),
+    ];
   }
 }

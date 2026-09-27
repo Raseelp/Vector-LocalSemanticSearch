@@ -15,6 +15,7 @@ import 'package:twentyonevision/view/widget/media_actions_sheet.dart';
 import 'package:twentyonevision/view/widget/media_chrome_button.dart';
 import 'package:twentyonevision/view/widget/media_info_widgets.dart';
 import 'package:twentyonevision/view/widget/photo_faces_layer.dart';
+import 'package:twentyonevision/view/widget/video_people_strip.dart';
 import 'package:twentyonevision/view/widget/zoomable_image.dart';
 
 class ImageViewScreen extends StatefulWidget {
@@ -47,7 +48,7 @@ void _dropSearchFocus() {
   });
 }
 
-class _ImageViewScreenState extends State<ImageViewScreen> {
+class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProviderStateMixin {
   late Uint8List imageBytes = widget.imageBytes;
   String get uri => widget.uri;
 
@@ -64,6 +65,65 @@ class _ImageViewScreenState extends State<ImageViewScreen> {
   // closed (flicking through unscanned photos) can be skipped.
   final int _token = DateTime.now().microsecondsSinceEpoch;
 
+  // ---- the People button: everyone recognised in this photo, in a panel ----
+  final GlobalKey<ZoomableImageState> _zoomKey = GlobalKey<ZoomableImageState>();
+  bool _peopleOpen = false;
+  int _peoplePulse = 0; // bumped to make the button draw the eye (a scan just found people)
+  bool _sawGlow = false; // the scan took long enough to show the glow
+  int? _pointedPerson;
+  int _pointId = 0;
+  FaceFlight? _flight;
+  late final AnimationController _flightCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 700));
+
+  /// The distinct people in the photo, biggest face first.
+  List<VideoPerson> get _people {
+    final sorted = [..._faces]..sort((a, b) => ((b.right - b.left) * (b.bottom - b.top)).compareTo((a.right - a.left) * (a.bottom - a.top)));
+    final seen = <int>{};
+    final out = <VideoPerson>[];
+    for (final f in sorted) {
+      if (seen.add(f.person.id)) out.add(VideoPerson(person: f.person, times: const []));
+    }
+    return out;
+  }
+
+  // A person picked in the panel: their face flies to their head in the picture and becomes the
+  // outline - the same transition as in a video, without a seek to wait for.
+  Future<void> _pointAtPerson(VideoPerson vp, Rect from) async {
+    final zoom = _zoomKey.currentState;
+    final face = _faces.where((f) => f.person.id == vp.person.id).firstOrNull;
+    if (zoom == null || face == null) return;
+    setState(() {
+      _peopleOpen = false;
+      _pointedPerson = vp.person.id;
+    });
+    final id = ++_pointId;
+    // Zoomed in, the head may be out of view: bring the whole picture back first.
+    await zoom.resetZoom();
+    if (!mounted || id != _pointId) return;
+
+    final entry = RingEntry.random();
+    final head = zoom.headOnScreen(face);
+    if (head == null) {
+      zoom.pointAt(face, entry);
+      return;
+    }
+    setState(() {
+      _flight = FaceFlight(faceId: vp.person.coverFaceId, from: from.center, to: head.center, endRadius: head.radius, entry: entry);
+    });
+    _flightCtrl.value = 0;
+    await _flightCtrl
+        .animateTo(FaceFlightOverlay.landingAt, duration: const Duration(milliseconds: 620), curve: Curves.linear)
+        .orCancel
+        .then((_) {}, onError: (_) {});
+    if (!mounted || id != _pointId) return;
+    zoom.pointAt(face, entry);
+    await _flightCtrl
+        .animateTo(1.0, duration: const Duration(milliseconds: 160), curve: Curves.easeOut)
+        .orCancel
+        .then((_) {}, onError: (_) {});
+    if (mounted && id == _pointId) setState(() => _flight = null);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -73,6 +133,7 @@ class _ImageViewScreenState extends State<ImageViewScreen> {
 
   @override
   void dispose() {
+    _flightCtrl.dispose();
     _poll?.cancel();
     NativeServices().cancelPhotoFaces(_token).catchError((_) {});
     _dropSearchFocus();
@@ -85,6 +146,7 @@ class _ImageViewScreenState extends State<ImageViewScreen> {
       if (!mounted) return;
       setState(() {
         _looking = true;
+        _sawGlow = true;
         _scanMessage = 'Looking for faces'; // not what the last scan ended on
       });
       // While it works, ask how far it has got and say so.
@@ -101,7 +163,12 @@ class _ImageViewScreenState extends State<ImageViewScreen> {
     try {
       final found = await NativeServices().photoFaces(uri, token: _token);
       if (mounted && (found.isNotEmpty || _faces.isNotEmpty)) {
-        setState(() => _faces = found);
+        final firstPeople = _faces.isEmpty && found.isNotEmpty;
+        setState(() {
+          _faces = found;
+          // A scan just found people (it was long enough to show): point at where they are.
+          if (firstPeople && _sawGlow) _peoplePulse++;
+        });
       }
     } catch (_) {
       // No faces to tap - the photo is still fully usable.
@@ -159,14 +226,59 @@ class _ImageViewScreenState extends State<ImageViewScreen> {
                         ? MediaQuery.of(context).size.height * 0.5
                         : 0,
                     child: ZoomableImage(
+                      key: _zoomKey,
                       imageBytes: imageBytes,
-                      onSingleTap: controller.hideMetadata,
+                      onSingleTap: () {
+                        if (_peopleOpen) {
+                          setState(() => _peopleOpen = false);
+                        } else {
+                          controller.hideMetadata();
+                        }
+                      },
                       faces: _faces,
                       onOpenPerson: _openPerson,
+                      captionInset: _faces.isEmpty ? 0 : 44,
                     ),
                   ),
 
                   Positioned.fill(child: PhotoScanGlow(visible: _looking, message: _scanMessage)),
+
+                  // The people in this photo (opens a panel above): out of the way while the details are up.
+                  if (_faces.isNotEmpty && !controller.showMetadata) ...[
+                    if (_peopleOpen)
+                      Positioned(
+                        left: AppSpacing.base,
+                        right: AppSpacing.base,
+                        bottom: MediaQuery.of(context).padding.bottom + 84,
+                        child: VideoPeoplePanel(
+                          people: _people,
+                          focusedId: _pointedPerson,
+                          onTap: _pointAtPerson,
+                          noun: 'photo',
+                        ),
+                      ),
+                    Positioned(
+                      right: AppSpacing.base,
+                      bottom: MediaQuery.of(context).padding.bottom + AppSpacing.xl,
+                      child: PeopleChipButton(
+                        count: _people.length,
+                        pulse: _peoplePulse,
+                        open: _peopleOpen,
+                        onTap: () => setState(() => _peopleOpen = !_peopleOpen),
+                      ),
+                    ),
+                  ],
+
+                  // Their face, flying from the panel to their head.
+                  if (_flight != null)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: AnimatedBuilder(
+                          animation: _flightCtrl,
+                          builder: (context, _) => FaceFlightOverlay(flight: _flight!, t: _flightCtrl.value),
+                        ),
+                      ),
+                    ),
 
                   // A soft scrim behind the top chrome, not just translucent
                   // buttons on their own - keeps the icons legible over a

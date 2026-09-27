@@ -25,7 +25,11 @@ class ZoomableImage extends StatefulWidget {
     required this.onSingleTap,
     this.faces = const [],
     this.onOpenPerson,
+    this.captionInset = 0,
   });
+
+  /// Extra room kept clear along the bottom for the "tap a face" line (the viewer's own buttons).
+  final double captionInset;
 
   final Uint8List imageBytes;
   final VoidCallback onSingleTap;
@@ -35,10 +39,18 @@ class ZoomableImage extends StatefulWidget {
   final ValueChanged<Person>? onOpenPerson;
 
   @override
-  State<ZoomableImage> createState() => _ZoomableImageState();
+  State<ZoomableImage> createState() => ZoomableImageState();
 }
 
-class _ZoomableImageState extends State<ZoomableImage> with SingleTickerProviderStateMixin {
+/// Where a head is on screen right now (centre in global coordinates, and its radius).
+class HeadOnScreen {
+  const HeadOnScreen(this.center, this.radius);
+
+  final Offset center;
+  final double radius;
+}
+
+class ZoomableImageState extends State<ZoomableImage> with SingleTickerProviderStateMixin {
   final TransformationController _transformController = TransformationController();
   late final AnimationController _animController;
   Animation<Matrix4>? _zoomAnimation;
@@ -55,14 +67,44 @@ class _ZoomableImageState extends State<ZoomableImage> with SingleTickerProvider
 
   // The face currently picked (ring + name chip showing), if any.
   PhotoFace? _selectedFace;
+  RingEntry? _ringEntry; // set when a face was picked from outside and a flight lands on it
+
+  /// Brings the whole picture back into view (so every head is on screen); done when it has.
+  Future<void> resetZoom() async {
+    if (_transformController.value.getMaxScaleOnAxis() <= 1.02) return;
+    _zoomAnimation = Matrix4Tween(
+      begin: _transformController.value,
+      end: Matrix4.identity(),
+    ).animate(CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic));
+    await _animController.forward(from: 0).orCancel.then((_) {}, onError: (_) {});
+  }
+
+  /// Where [face]'s head is on screen now, following the zoom and pan.
+  HeadOnScreen? headOnScreen(PhotoFace face) {
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    final spot = headSpotFor(face, box.size);
+    if (spot == null) return null;
+    final m = _transformController.value;
+    return HeadOnScreen(box.localToGlobal(MatrixUtils.transformPoint(m, spot.center)), spot.radius * m.getMaxScaleOnAxis());
+  }
+
+  /// Picks [face] from outside (the people panel): the outline draws in the band [entry] a flight
+  /// is landing with.
+  void pointAt(PhotoFace face, RingEntry entry) {
+    setState(() {
+      _ringEntry = entry;
+      _selectedFace = face;
+    });
+  }
 
   @override
-  void didUpdateWidget(covariant ZoomableImage old) {
-    super.didUpdateWidget(old);
-    if (!identical(old.imageBytes, widget.imageBytes)) _underlay = old.imageBytes;
+  void didUpdateWidget(covariant ZoomableImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.imageBytes, widget.imageBytes)) _underlay = oldWidget.imageBytes;
 
     // The people were looked up again: keep the same face picked, now with fresh details.
-    if (!identical(old.faces, widget.faces) && _selectedFace != null) {
+    if (!identical(oldWidget.faces, widget.faces) && _selectedFace != null) {
       final id = _selectedFace!.faceId;
       _selectedFace = widget.faces.where((f) => f.faceId == id).firstOrNull;
     }
@@ -140,7 +182,10 @@ class _ZoomableImageState extends State<ZoomableImage> with SingleTickerProvider
             // A tap on empty photo first puts away a picked face, then behaves as usual.
             onTap: () {
               if (_selectedFace != null) {
-                setState(() => _selectedFace = null);
+                setState(() {
+                  _selectedFace = null;
+                  _ringEntry = null;
+                });
               } else {
                 widget.onSingleTap();
               }
@@ -189,8 +234,13 @@ class _ZoomableImageState extends State<ZoomableImage> with SingleTickerProvider
               faces: widget.faces,
               transform: _transformController,
               selected: _selectedFace,
-              onSelect: (face) => setState(() => _selectedFace = face),
+              onSelect: (face) => setState(() {
+                _ringEntry = null;
+                _selectedFace = face;
+              }),
               onOpen: widget.onOpenPerson!,
+              entry: _ringEntry,
+              bottomInset: widget.captionInset,
             ),
           ),
         IgnorePointer(
