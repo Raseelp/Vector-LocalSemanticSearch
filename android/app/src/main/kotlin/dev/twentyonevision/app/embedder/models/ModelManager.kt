@@ -22,6 +22,23 @@ class ModelManager(private val context: Context) {
 
     private val prefs = context.getSharedPreferences("model_manager", Context.MODE_PRIVATE)
 
+    init {
+        cleanupLegacyPyTorchModels()
+    }
+
+    // One-time migration cleanup: the CLIP models moved from TorchScript
+    // (.pt, loaded by PyTorch Mobile) to ONNX under new file names, so
+    // RemoteModel's catalog no longer points at these - without this they'd
+    // sit in context.filesDir forever, orphaned, on every device that had
+    // already downloaded them. Harmless to run on every launch: once gone,
+    // File.delete() is a silent no-op.
+    private fun cleanupLegacyPyTorchModels() {
+        for (name in listOf("clip_vision_ts.pt", "clip_text_ts.pt")) {
+            File(context.filesDir, name).delete()
+            File(context.filesDir, "$name.part").delete()
+        }
+    }
+
     companion object {
         private const val PROGRESS_INTERVAL_MS = 250L
         private const val MAX_ATTEMPTS = 5

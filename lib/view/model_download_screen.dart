@@ -9,8 +9,8 @@ import 'package:twentyonevision/utils/app_spacing.dart';
 /// A model's file name in words a person would use.
 String friendlyModelName(String fileName) {
   switch (fileName) {
-    case 'clip_vision_ts.pt':
-    case 'clip_text_ts.pt':
+    case 'clip_vision.onnx':
+    case 'clip_text.onnx':
       return 'Search';
     case 'w600k_r50.onnx':
       return 'People';

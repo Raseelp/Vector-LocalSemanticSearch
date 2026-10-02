@@ -4,8 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import org.pytorch.Tensor
-import org.pytorch.torchvision.TensorImageUtils
 import kotlin.math.ceil
 
 object ImagePreprocessor {
@@ -24,35 +22,48 @@ object ImagePreprocessor {
         0.27577711f
     )
 
-    fun loadAsTensor(
+    fun loadAsFloatArray(
         context: Context,
         uri: Uri
-    ): Tensor? {
+    ): FloatArray? {
         return try {
             val bitmap = loadAndResizeBitmap(context, uri) ?: return null
-            val tensor = bitmapToTensor(bitmap)
+            val data = bitmapToFloatArray(bitmap)
             bitmap.recycle()
-            tensor
+            data
         } catch (e: Exception) {
             null
         }
     }
 
-    fun bitmapToTensor(bitmap: Bitmap): Tensor {
+    // CHW, RGB, each channel's 0..255 pixel value scaled to 0..1 then
+    // (v - mean) / std - exactly what org.pytorch.torchvision's
+    // TensorImageUtils.bitmapToFloat32Tensor used to produce with this same
+    // MEAN/STD, just as a plain FloatArray instead of a PyTorch Tensor now
+    // that inference goes through ONNX Runtime. getPixels always returns
+    // standard 32-bit ARGB regardless of the Bitmap's own Config (RGB_565
+    // included), so this doesn't care how the bitmap was decoded.
+    fun bitmapToFloatArray(bitmap: Bitmap): FloatArray {
         val cropped = resizeAndCenterCrop(bitmap)
+        val size = IMAGE_SIZE
+        val plane = size * size
+        val pixels = IntArray(plane)
+        cropped.getPixels(pixels, 0, size, 0, 0, size, size)
 
-        val tensor = TensorImageUtils.bitmapToFloat32Tensor(
-            cropped,
-            MEAN,
-            STD
-        )
+        val data = FloatArray(3 * plane)
+        for (i in 0 until plane) {
+            val p = pixels[i]
+            data[i] = ((p shr 16 and 0xFF) / 255f - MEAN[0]) / STD[0]
+            data[plane + i] = ((p shr 8 and 0xFF) / 255f - MEAN[1]) / STD[1]
+            data[2 * plane + i] = ((p and 0xFF) / 255f - MEAN[2]) / STD[2]
+        }
 
         // Only recycle the cropped copy, never the original passed in
         if (cropped !== bitmap) {
             cropped.recycle()
         }
 
-        return tensor
+        return data
     }
 
     // CLIP's own preprocessing resizes the shorter side to 224 and center-

@@ -81,7 +81,7 @@ changes. A tuning step times the model on your phone (threads, batching,
 hardware acceleration) and picks what is fastest.
 
 The Flutter UI talks to a native Android layer that runs CLIP (vision +
-text towers) via PyTorch Mobile, the face models via ONNX Runtime, and stores
+text towers) and the face models both via ONNX Runtime, and stores
 embeddings and faces in small on-device stores (a binary store for CLIP, SQLite
 for faces).
 

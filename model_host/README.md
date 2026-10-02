@@ -27,8 +27,8 @@ Worth checking before trusting the flow:
 
 ## Publishing for real
 
-1. Create a GitHub Release tagged `models-v1` and upload `clip_vision_ts.pt`,
-   `clip_text_ts.pt` and `w600k_r50.onnx` (the face recognition model - the app
+1. Create a GitHub Release tagged `models-v1` and upload `clip_vision.onnx`,
+   `clip_text.onnx` and `w600k_r50.onnx` (the face recognition model - the app
    downloads all three on first launch) as its assets.
 2. `MODEL_BASE_URL` in the `release` build type
    (`android/app/build.gradle.kts`) already points at that tag - update it
@@ -37,11 +37,16 @@ Worth checking before trusting the flow:
    `RemoteModel.kt` (`android/app/src/main/kotlin/dev/twentyonevision/app/embedder/models/`)
    to match, or every download will fail verification.
 
+The CLIP models moved from TorchScript (`.pt`, PyTorch Mobile) to ONNX -
+see `export_clip/` for the export scripts. `clip_vision_ts.pt`/
+`clip_text_ts.pt` in this folder are the old files, kept only until you're
+done comparing; they're no longer what the app downloads and can be deleted.
+
 Current checksums:
 
 ```
-clip_vision_ts.pt  sha256:2aa36306b7da2e6bb866a61863b1aa96a79f1dc6d22285f2098ac77c2be12178  (351463461 bytes)
-clip_text_ts.pt    sha256:7d06dd86e914be7910063a1a9613e4591a1cf0d8fbfb5f6648d1bef4bb04b09b  (253829539 bytes)
+clip_vision.onnx   sha256:2d0f282b6182bef9a3493661c6cc4071ab0316db4171ea60481457581b3b04a0  (351777098 bytes)
+clip_text.onnx     sha256:cf2ea6228b51ff5ffcb0f4d2a54a4e94cfeaeca7fa48345e817a33672e2f6d5d  (254340822 bytes)
 w600k_r50.onnx     sha256:4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43  (174383860 bytes)
 ```
 

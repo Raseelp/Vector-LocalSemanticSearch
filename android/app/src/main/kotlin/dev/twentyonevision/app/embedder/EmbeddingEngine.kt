@@ -1,11 +1,10 @@
 package dev.twentyonevision.app.embedder
 
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
 import android.content.Context
 import android.net.Uri
-import org.pytorch.IValue
-import org.pytorch.Module
-import org.pytorch.Tensor
-import com.facebook.soloader.SoLoader
 import dev.twentyonevision.app.embedder.models.ModelCatalog
 import dev.twentyonevision.app.embedder.models.ModelManager
 import dev.twentyonevision.app.embedder.models.ModelsNotReadyException
@@ -15,6 +14,8 @@ import dev.twentyonevision.app.embedder.storage.HashUtils
 import androidx.documentfile.provider.DocumentFile
 import android.provider.DocumentsContract
 import android.util.Log
+import java.nio.FloatBuffer
+import java.nio.LongBuffer
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -26,14 +27,15 @@ class EmbeddingEngine(
 ) {
 
     // Loaded lazily - always go through ensureModelsLoaded() first.
-    private var visionModule: Module? = null
-    private var textModule: Module? = null
+    private val ortEnv: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private var visionSession: OrtSession? = null
+    private var textSession: OrtSession? = null
     private val store: EmbeddingStore
 
-    // A single Module instance isn't safe to call forward() on from two
-    // threads at once. Search can now run at the same time as a scan (see
+    // A single OrtSession isn't safe to call run() on from two threads at
+    // once. Search can now run at the same time as a scan (see
     // MainActivity), and image-based search shares this exact vision
-    // module with scanning - so every actual forward() call on it goes
+    // session with scanning - so every actual run() call on it goes
     // through this lock. Only the call itself is locked, not the tensor
     // prep around it, so a wait here is short: at most one batch's worth
     // of inference time, not the other side's whole operation.
@@ -70,14 +72,13 @@ class EmbeddingEngine(
         // How many recently-embedded files to remember for the UI strip.
         private const val RECENT_WINDOW_SIZE = 10
 
-        // Every image/frame tensor is always exactly 3x224x224 - fixed by
-        // ImagePreprocessor - so batching can rely on this instead of
-        // inspecting each Tensor's shape at runtime.
+        // Every image/frame's FloatArray is always exactly 3x224x224 - fixed
+        // by ImagePreprocessor - so batching can rely on this instead of
+        // inspecting each array's length at runtime.
         private const val VISION_INPUT_SIZE = 224
     }
 
     init {
-        SoLoader.init(context, false)
         store = EmbeddingStore(context)
     }
 
@@ -85,19 +86,25 @@ class EmbeddingEngine(
     // Dart checks areModelsReady() up front, this is just the backstop.
     @Synchronized
     private fun ensureModelsLoaded() {
-        if (visionModule != null && textModule != null) return
+        if (visionSession != null && textSession != null) return
 
         if (!modelManager.areModelsReady()) {
             throw ModelsNotReadyException("CLIP models are not downloaded yet")
         }
 
-        if (visionModule == null) {
+        if (visionSession == null) {
             val visionModel = ModelCatalog.MODELS.first { it.id == "vision" }
-            visionModule = Module.load(modelManager.localFile(visionModel).absolutePath)
+            visionSession = ortEnv.createSession(
+                modelManager.localFile(visionModel).absolutePath,
+                OrtSession.SessionOptions()
+            )
         }
-        if (textModule == null) {
+        if (textSession == null) {
             val textModel = ModelCatalog.MODELS.first { it.id == "text" }
-            textModule = Module.load(modelManager.localFile(textModel).absolutePath)
+            textSession = ortEnv.createSession(
+                modelManager.localFile(textModel).absolutePath,
+                OrtSession.SessionOptions()
+            )
         }
     }
 
@@ -109,19 +116,22 @@ class EmbeddingEngine(
         require(tokens.size == 77) { "Expected 77 tokens, got ${tokens.size}" }
 
         ensureModelsLoaded()
-        val text = textModule!!
+        val text = textSession!!
 
         val longs = LongArray(77) { tokens[it].toLong() }
-        val tensor = Tensor.fromBlob(longs, longArrayOf(1, 77))
 
-        // Same reason as visionLock: a Module isn't safe to call from two
-        // threads at once, and text encoding now happens off the main
+        // Same reason as visionLock: a session isn't safe to call run() from
+        // two threads at once, and text encoding now happens off the main
         // thread (collections, search) so calls can overlap.
         return synchronized(textLock) {
-            text
-                .forward(IValue.from(tensor))
-                .toTensor()
-                .dataAsFloatArray
+            OnnxTensor.createTensor(ortEnv, LongBuffer.wrap(longs), longArrayOf(1, 77)).use { tensor ->
+                text.run(mapOf(text.inputNames.first() to tensor)).use { result ->
+                    val buffer = (result[0] as OnnxTensor).floatBuffer
+                    val out = FloatArray(buffer.remaining())
+                    buffer.get(out)
+                    out
+                }
+            }
         }
     }
 
@@ -140,7 +150,7 @@ class EmbeddingEngine(
         Log.d(TAG, "embedImages: start — mode=$mode contentMode=$contentMode")
 
         ensureModelsLoaded()
-        val vision = visionModule!!
+        val vision = visionSession!!
 
         onProgress(
             ScanProgress(
@@ -299,7 +309,7 @@ class EmbeddingEngine(
         try {
             data class PendingChunk(
                 val toEmbed: List<Pair<ImageSource, Long>>,
-                val futures: List<Future<Tensor?>>
+                val futures: List<Future<FloatArray?>>
             )
 
             fun submitChunk(chunk: List<ImageSource>): PendingChunk {
@@ -323,7 +333,7 @@ class EmbeddingEngine(
                 }
                 val futures = toEmbed.map { (img, _) ->
                     prepPool.submit(Callable {
-                        try { ImagePreprocessor.loadAsTensor(context, img.uri) } catch (e: Exception) { null }
+                        try { ImagePreprocessor.loadAsFloatArray(context, img.uri) } catch (e: Exception) { null }
                     })
                 }
                 return PendingChunk(toEmbed, futures)
@@ -352,7 +362,7 @@ class EmbeddingEngine(
                     submitChunk(chunks[chunkIndex + 1])
                 } else null
 
-                val tensors = mutableListOf<Tensor>()
+                val tensors = mutableListOf<FloatArray>()
                 val meta = mutableListOf<Pair<ImageSource, Long>>()
                 for ((idx, pair) in current.toEmbed.withIndex()) {
                     val tensor = try { current.futures[idx].get() } catch (e: Exception) { null }
@@ -491,7 +501,7 @@ class EmbeddingEngine(
         video: VideoSource,
         hash: Long,
         folderId: String,
-        vision: Module
+        vision: OrtSession
     ): List<EmbeddingRecord> {
 
         val videoUriString = video.uri.toString()
@@ -503,12 +513,12 @@ class EmbeddingEngine(
 
         if (frames.isEmpty()) return emptyList()
 
-        val tensors = mutableListOf<Tensor>()
+        val tensors = mutableListOf<FloatArray>()
         val timestamps = mutableListOf<Long>()
 
         for ((timestampMs, bitmap) in frames) {
             try {
-                tensors.add(ImagePreprocessor.bitmapToTensor(bitmap))
+                tensors.add(ImagePreprocessor.bitmapToFloatArray(bitmap))
                 timestamps.add(timestampMs)
             } catch (e: Exception) {
                 // one bad frame doesn't kill the whole video
@@ -552,15 +562,13 @@ class EmbeddingEngine(
      * A null in the returned list means that specific tensor failed to
      * embed (caller should treat it as a skip, same as before batching).
      */
-    private fun runBatchedInference(vision: Module, tensors: List<Tensor>): List<FloatArray?> {
+    private fun runBatchedInference(vision: OrtSession, tensors: List<FloatArray>): List<FloatArray?> {
         if (tensors.isEmpty()) return emptyList()
 
         if (tensors.size == 1) {
             return listOf(
                 try {
-                    synchronized(visionLock) {
-                        vision.forward(IValue.from(tensors[0])).toTensor().dataAsFloatArray
-                    }
+                    synchronized(visionLock) { runVision(vision, tensors[0], 1) }
                 } catch (e: Exception) {
                     null
                 }
@@ -571,15 +579,9 @@ class EmbeddingEngine(
             val perItemFloats = 3 * VISION_INPUT_SIZE * VISION_INPUT_SIZE
             val batchedData = FloatArray(tensors.size * perItemFloats)
             for ((i, t) in tensors.withIndex()) {
-                System.arraycopy(t.dataAsFloatArray, 0, batchedData, i * perItemFloats, perItemFloats)
+                System.arraycopy(t, 0, batchedData, i * perItemFloats, perItemFloats)
             }
-            val batchedTensor = Tensor.fromBlob(
-                batchedData,
-                longArrayOf(tensors.size.toLong(), 3L, VISION_INPUT_SIZE.toLong(), VISION_INPUT_SIZE.toLong())
-            )
-            val output = synchronized(visionLock) {
-                vision.forward(IValue.from(batchedTensor)).toTensor().dataAsFloatArray
-            }
+            val output = synchronized(visionLock) { runVision(vision, batchedData, tensors.size) }
             val embeddingDim = output.size / tensors.size
             (0 until tensors.size).map { i -> output.copyOfRange(i * embeddingDim, (i + 1) * embeddingDim) }
         } catch (e: Exception) {
@@ -591,11 +593,26 @@ class EmbeddingEngine(
 
         return tensors.map { t ->
             try {
-                synchronized(visionLock) {
-                    vision.forward(IValue.from(t)).toTensor().dataAsFloatArray
-                }
+                synchronized(visionLock) { runVision(vision, t, 1) }
             } catch (e: Exception) {
                 null
+            }
+        }
+    }
+
+    // One `n`-item batch (or a single item, n=1) through the vision model -
+    // the one place that builds the input tensor, runs the session and
+    // pulls the flat float array back out, shared by every call site above
+    // instead of repeating the OnnxTensor/session.run/floatBuffer dance per
+    // site the way the single-item and batched paths each used to.
+    private fun runVision(session: OrtSession, data: FloatArray, n: Int): FloatArray {
+        val shape = longArrayOf(n.toLong(), 3L, VISION_INPUT_SIZE.toLong(), VISION_INPUT_SIZE.toLong())
+        return OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(data), shape).use { tensor ->
+            session.run(mapOf(session.inputNames.first() to tensor)).use { result ->
+                val buffer = (result[0] as OnnxTensor).floatBuffer
+                val out = FloatArray(buffer.remaining())
+                buffer.get(out)
+                out
             }
         }
     }
@@ -808,15 +825,10 @@ class EmbeddingEngine(
         ensureModelsLoaded()
 
         val uri = Uri.parse(uriString)
-        val tensor = ImagePreprocessor.loadAsTensor(context, uri)
+        val data = ImagePreprocessor.loadAsFloatArray(context, uri)
             ?: throw Exception("Failed to load image")
 
-        return synchronized(visionLock) {
-            visionModule!!
-                .forward(IValue.from(tensor))
-                .toTensor()
-                .dataAsFloatArray
-        }
+        return synchronized(visionLock) { runVision(visionSession!!, data, 1) }
     }
 
     // Same as encodeImageFromUri, for a frame already decoded in memory (a
@@ -826,14 +838,9 @@ class EmbeddingEngine(
     fun encodeBitmap(bitmap: android.graphics.Bitmap): FloatArray {
         ensureModelsLoaded()
 
-        val tensor = ImagePreprocessor.bitmapToTensor(bitmap)
+        val data = ImagePreprocessor.bitmapToFloatArray(bitmap)
 
-        return synchronized(visionLock) {
-            visionModule!!
-                .forward(IValue.from(tensor))
-                .toTensor()
-                .dataAsFloatArray
-        }
+        return synchronized(visionLock) { runVision(visionSession!!, data, 1) }
     }
 
     // [pathFilter], when given, restricts the scan to records whose own path (a photo's own
