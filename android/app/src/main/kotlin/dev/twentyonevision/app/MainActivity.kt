@@ -54,10 +54,32 @@ class MainActivity : FlutterActivity() {
     // A "compressed" load (loadImageBytes/loadVideoThumbnail) only ever
     // backs a grid thumbnail or, at most, a phone-sized full-screen view -
     // never worth decoding a multi-thousand-pixel original for. This caps
-    // the longest side well above any phone screen's long edge, so it's
-    // still sharp full-screen, while avoiding the memory a full-resolution
-    // decode would cost for no visible benefit.
+    // the longest side well above a normal grid tile's size, so it's still
+    // sharp, while avoiding the memory a full-resolution decode would cost
+    // for no visible benefit. This is the default for every tile; a bento
+    // tile bigger than normal asks for one of the three caps below instead
+    // (via the optional "maxDimension" argument both calls accept) rather
+    // than this cap being raised for every tile just to satisfy a handful
+    // of them.
     private val MAX_COMPRESSED_DIMENSION = 1600
+
+    // For the bento grid's 2-cell wide/tall filler tiles (next to a hero or
+    // showcase) - a little bigger than a normal 1-cell tile, so only a
+    // small bump over MAX_COMPRESSED_DIMENSION is needed.
+    private val MAX_COMPRESSED_DIMENSION_WIDE = 1900
+
+    // For the bento grid's 2x2 hero tile - noticeably bigger than a normal
+    // tile, but nowhere near as big as an 8/16-slot showcase, so it only
+    // needs a modest bump over MAX_COMPRESSED_DIMENSION, not the showcase
+    // cap below.
+    private val MAX_COMPRESSED_DIMENSION_HERO = 2200
+
+    // For the bento grid's 8-slot/16-slot showcase tiles specifically
+    // (search_results.dart decides which indices qualify), so raising this
+    // doesn't cost anything for the normal case - typically only a handful
+    // of these decode per screen, unlike MAX_COMPRESSED_DIMENSION above
+    // which every single grid thumbnail shares.
+    private val MAX_COMPRESSED_DIMENSION_SHOWCASE = 3200
 
     private var pendingPickResult: MethodChannel.Result? = null
     // Both process-wide (ScanEngineHolder), not per-Activity instances -
@@ -389,6 +411,18 @@ class MainActivity : FlutterActivity() {
                     val tokens = call.argument<List<Int>>("tokens")
                     val topK   = call.argument<Int>("topK") ?: 20
                     val contentMode = call.argument<String>("contentMode") ?: "both"
+                    // "@name"s (or plain recognised names) in the search box: the person half
+                    // of the query, resolved here to their shared photos/videos via FaceStore -
+                    // "together" mode, same as peoplePhotos' own default reading of several
+                    // names side by side - and handed to EmbeddingEngine as a plain path
+                    // restriction, not anything it needs to know is about people at all.
+                    //
+                    // mapNotNull + safe cast, not a direct List<Number> cast + .map{it.toLong()}:
+                    // the latter throws (ClassCastException/NPE) on any malformed element instead
+                    // of just dropping it, same defensive parsing parseCollectionSpecs uses below.
+                    val personIds = (call.argument<List<*>>("personIds"))
+                        ?.mapNotNull { (it as? Number)?.toLong() }
+                        ?: emptyList()
 
                     if (tokens == null || tokens.size != 77) {
                         result.error("INVALID_TOKENS", "Expected 77 tokens", null)
@@ -397,8 +431,10 @@ class MainActivity : FlutterActivity() {
 
                     searchExecutor.execute {
                         try {
+                            val pathFilter = if (personIds.isEmpty()) null else
+                                faces.store.peopleMedia(personIds, "together").map { it.uri }.toSet()
                             val textEmbedding = embeddingEngine.encodeText(tokens.toIntArray())
-                            val results = embeddingEngine.searchByText(textEmbedding, topK, contentMode)
+                            val results = embeddingEngine.searchByText(textEmbedding, topK, contentMode, pathFilter)
 
                             val mapped = results.map {
                                 mapOf(
@@ -468,7 +504,7 @@ class MainActivity : FlutterActivity() {
                     }
                     searchExecutor.execute {
                         try {
-                            val scores = embeddingEngine.scoreCollections(specs).map { s ->
+                            val scores = embeddingEngine.scoreCollections(resolvePathFilters(specs)).map { s ->
                                 mapOf(
                                     "id" to s.id,
                                     "count" to s.count,
@@ -497,7 +533,8 @@ class MainActivity : FlutterActivity() {
                     }
                     searchExecutor.execute {
                         try {
-                            val mapped = embeddingEngine.collectionMembers(spec, limit).map {
+                            val resolvedSpec = resolvePathFilters(listOf(spec)).first()
+                            val mapped = embeddingEngine.collectionMembers(resolvedSpec, limit).map {
                                 mapOf(
                                     "path"        to it.imagePath,
                                     "score"       to it.score,
@@ -669,6 +706,8 @@ class MainActivity : FlutterActivity() {
                 "loadImageBytes" -> {
                     val uriString    = call.argument<String>("uri")
                     val shouldCompress = call.argument<Boolean>("compress") ?: true
+                    val maxDimension = ((call.argument<Number>("maxDimension"))?.toInt()
+                        ?: MAX_COMPRESSED_DIMENSION).coerceAtLeast(1)
 
                     if (uriString == null) {
                         result.error("NO_URI", "URI missing", null)
@@ -680,7 +719,7 @@ class MainActivity : FlutterActivity() {
                             val uri = android.net.Uri.parse(uriString)
 
                             val bitmap = if (shouldCompress) {
-                                decodeSampledBitmap(uri, MAX_COMPRESSED_DIMENSION)
+                                decodeSampledBitmap(uri, maxDimension)
                             } else {
                                 contentResolver.openInputStream(uri)?.use {
                                     BitmapFactory.decodeStream(it)
@@ -1310,6 +1349,8 @@ class MainActivity : FlutterActivity() {
                 "loadVideoThumbnail" -> {
                     val uriString   = call.argument<String>("uri")
                     val timestampMs = (call.argument<Number>("timestampMs") ?: 0).toLong()
+                    val maxDimension = ((call.argument<Number>("maxDimension"))?.toInt()
+                        ?: MAX_COMPRESSED_DIMENSION).coerceAtLeast(1)
 
                     if (uriString == null) {
                         result.error("NO_URI", "URI missing", null)
@@ -1346,7 +1387,7 @@ class MainActivity : FlutterActivity() {
                                     // pre-decode (MediaMetadataRetriever
                                     // doesn't offer a sampling hint the way
                                     // BitmapFactory does).
-                                    val scaled = capBitmapDimension(bitmap, MAX_COMPRESSED_DIMENSION)
+                                    val scaled = capBitmapDimension(bitmap, maxDimension)
 
                                     val output = ByteArrayOutputStream()
                                     scaled.compress(
@@ -1599,13 +1640,31 @@ class MainActivity : FlutterActivity() {
             val embedding = (entry["embedding"] as? List<*>)
                 ?.map { (it as Number).toFloat() }
                 ?.toFloatArray() ?: return@mapNotNull null
+            val personIds = (entry["personIds"] as? List<*>)
+                ?.mapNotNull { (it as? Number)?.toLong() }
+                ?: emptyList()
             EmbeddingEngine.CollectionSpec(
                 id = id,
                 embedding = embedding,
                 contentMode = entry["contentMode"] as? String ?: "both",
-                k = (entry["k"] as? Number)?.toDouble() ?: 3.0
+                k = (entry["k"] as? Number)?.toDouble() ?: 3.0,
+                personIds = personIds
             )
         }
+    }
+
+    // Resolves each spec's personIds (from an "@name" search) to an actual
+    // pathFilter via FaceStore - same "together" reading of several people
+    // searchByText's own personIds uses. Called from inside a
+    // searchExecutor.execute{} block, never before dispatching to one:
+    // peopleMedia is a real SQLite read, and parseCollectionSpecs above
+    // runs synchronously on whichever thread the channel call arrives on.
+    private fun resolvePathFilters(
+        specs: List<EmbeddingEngine.CollectionSpec>
+    ): List<EmbeddingEngine.CollectionSpec> = specs.map { spec ->
+        if (spec.personIds.isEmpty()) spec else spec.copy(
+            pathFilter = faces.store.peopleMedia(spec.personIds, "together").map { it.uri }.toSet()
+        )
     }
 
     // The bounds+EXIF half of loadMetadataByUri, split out so the handler

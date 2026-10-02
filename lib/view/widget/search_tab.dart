@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:twentyonevision/controllers/collections_controller.dart';
@@ -11,6 +13,8 @@ import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
 import 'package:twentyonevision/utils/floating_bar.dart';
+import 'package:twentyonevision/view/widget/mention_input_field.dart';
+import 'package:twentyonevision/view/widget/mention_text_controller.dart';
 import 'package:twentyonevision/view/widget/search_filter_sheet.dart';
 import 'package:twentyonevision/view/widget/search_results.dart';
 
@@ -97,56 +101,198 @@ class SearchTab extends StatelessWidget {
 // photo only attaches it (shown as a chip, same idea as an attachment
 // preview above a chat message) - nothing runs until Search is pressed,
 // exactly like typing text doesn't search until then either.
-class _SearchPill extends StatelessWidget {
+//
+// The text mode also recognises one named person inside it - typed plainly, or picked from an
+// "@" dropdown - see MentionTextEditingController. This widget owns the dropdown's overlay
+// (anchored to the pill itself via a LayerLink, so it tracks it regardless of scrolling).
+class _SearchPill extends StatefulWidget {
   const _SearchPill({required this.controller});
 
   final NativeController controller;
 
   @override
+  State<_SearchPill> createState() => _SearchPillState();
+}
+
+class _SearchPillState extends State<_SearchPill> {
+  final LayerLink _mentionLink = LayerLink();
+  OverlayEntry? _mentionEntry;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.searchTextController.addListener(_onTextChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.searchTextController.removeListener(_onTextChanged);
+    _removeMentionOverlay();
+    super.dispose();
+  }
+
+  void _onTextChanged() {
+    if (widget.controller.searchTextController.activeMentionQuery == null) {
+      _removeMentionOverlay();
+    } else if (_mentionEntry == null) {
+      _mentionEntry = OverlayEntry(
+        builder: (_) => MentionDropdown(
+          link: _mentionLink,
+          controller: widget.controller.searchTextController,
+          focusNode: widget.controller.searchFocusNode,
+        ),
+      );
+      Overlay.of(context).insert(_mentionEntry!);
+    }
+    // No explicit rebuild of an already-inserted entry needed: _MentionDropdown listens to the
+    // same controller itself and refilters on every keystroke on its own.
+  }
+
+  void _removeMentionOverlay() {
+    final entry = _mentionEntry;
+    if (entry == null) return;
+    _mentionEntry = null;
+    entry.remove();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final controller = widget.controller;
     final hasImage = controller.pickedSearchImageUri != null;
 
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.base,
-        vertical: AppSpacing.xxs,
-      ),
-      decoration: BoxDecoration(
-        color: AppColors.parchment,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
-      ),
-      child: Row(
-        children: [
-          if (hasImage) ...[
-            Expanded(child: _AttachedImageChip(controller: controller)),
-          ] else ...[
-            const Icon(Icons.search_rounded, size: 19, color: AppColors.ink48),
-            const SizedBox(width: AppSpacing.sm),
-            Expanded(
-              child: TextField(
-                controller: controller.searchTextController,
-                focusNode: controller.searchFocusNode,
-                onTapOutside: (_) => FocusScope.of(context).unfocus(),
-                onSubmitted: (_) => controller.runSearch(),
-                textInputAction: TextInputAction.search,
-                style: Theme.of(context).textTheme.bodyMedium,
-                decoration: const InputDecoration(
-                  hintText: 'Search your photos and videos',
-                  hintStyle: TextStyle(color: AppColors.ink48),
-                  border: InputBorder.none,
-                  isCollapsed: true,
-                  contentPadding: EdgeInsets.symmetric(vertical: AppSpacing.md),
+    return CompositedTransformTarget(
+      link: _mentionLink,
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.base,
+          vertical: AppSpacing.xxs,
+        ),
+        decoration: BoxDecoration(
+          color: AppColors.parchment,
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+        ),
+        child: Row(
+          children: [
+            if (hasImage) ...[
+              Expanded(child: _AttachedImageChip(controller: controller)),
+            ] else ...[
+              const Icon(Icons.search_rounded, size: 19, color: AppColors.ink48),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Stack(
+                  alignment: Alignment.centerLeft,
+                  children: [
+                    // Behind the field, only visible through it while it's empty - a real
+                    // hintText can't crossfade between examples on its own, and one of those
+                    // examples is the whole point: showing "@name at the beach" is how someone
+                    // discovers this exists at all, without a tooltip or a dialog for it.
+                    _RotatingHint(controller: controller.searchTextController),
+                    TextField(
+                      controller: controller.searchTextController,
+                      focusNode: controller.searchFocusNode,
+                      onTapOutside: (_) => FocusScope.of(context).unfocus(),
+                      onSubmitted: (_) => controller.runSearch(),
+                      textInputAction: TextInputAction.search,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        isCollapsed: true,
+                        contentPadding: EdgeInsets.symmetric(vertical: AppSpacing.md),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ),
+            ],
+            const SizedBox(width: AppSpacing.sm),
+            _FilterButton(controller: controller),
+            _SaveCollectionButton(controller: controller),
+            const SizedBox(width: AppSpacing.sm),
+            _SearchSubmitButton(controller: controller),
           ],
-          const SizedBox(width: AppSpacing.sm),
-          _FilterButton(controller: controller),
-          _SaveCollectionButton(controller: controller),
-          const SizedBox(width: AppSpacing.sm),
-          _SearchSubmitButton(controller: controller),
-        ],
+        ),
       ),
+    );
+  }
+}
+
+/// Cycles through a few example queries while the box is empty - the search bar's own quiet
+/// way of teaching what's possible, one of them being the "@name at the beach" syntax itself.
+/// No tooltip, no dialog, no badge to dismiss - just something true sitting where a hint
+/// normally would, that happens to change every few seconds.
+class _RotatingHint extends StatefulWidget {
+  const _RotatingHint({required this.controller});
+
+  final MentionTextEditingController controller;
+
+  @override
+  State<_RotatingHint> createState() => _RotatingHintState();
+}
+
+class _RotatingHintState extends State<_RotatingHint> {
+  static const _examples = [
+    'Search your photos and videos',
+    'Try "sunset over the hills"',
+    'Try "@name at the beach"',
+    'Try "birthday cake"',
+  ];
+
+  int _index = 0;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onTextChanged);
+    _syncTimer();
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onTextChanged);
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _onTextChanged() => _syncTimer();
+
+  // Only ticks while the hint is actually visible - without this, it kept cycling (and calling
+  // setState every 3s) for as long as the search tab existed, whether or not there was
+  // anything typed for it to matter to.
+  void _syncTimer() {
+    final shouldRun = widget.controller.text.isEmpty;
+    if (shouldRun == (_timer != null)) return;
+    if (shouldRun) {
+      _timer = Timer.periodic(const Duration(seconds: 3), (_) {
+        if (mounted) setState(() => _index = (_index + 1) % _examples.length);
+      });
+    } else {
+      _timer?.cancel();
+      _timer = null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: widget.controller,
+      builder: (context, _) {
+        // The real field draws right over this the moment there's anything typed - nothing
+        // needs to fade out for that, it just needs to not still be claiming this space.
+        if (widget.controller.text.isNotEmpty) return const SizedBox.shrink();
+        return IgnorePointer(
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 400),
+            child: Text(
+              _examples[_index],
+              key: ValueKey(_index),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppColors.ink48),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -441,7 +587,11 @@ class _SaveCollectionButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final query = controller.lastTextQuery;
     final isImageSearch = controller.lastImageSeedUri != null;
-    final hasTextSearch = query != null && query.isNotEmpty;
+    // A pure "@Raseel" mention with no other words strips down to an empty
+    // lastTextQuery - still a real, saveable search, just one described
+    // entirely by who's in it rather than by any text.
+    final hasTextSearch = (query != null && query.isNotEmpty) ||
+        controller.lastMentionedPersonIds.isNotEmpty;
     if ((!hasTextSearch && !isImageSearch) ||
         controller.searchResults.isEmpty) {
       return const SizedBox.shrink();
@@ -450,8 +600,9 @@ class _SaveCollectionButton extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () =>
-            isImageSearch ? _saveImageSearch(context) : _save(context, query!),
+        onTap: () => isImageSearch
+            ? _saveImageSearch(context)
+            : _save(context, controller.lastQueryWithMentions),
         borderRadius: BorderRadius.circular(AppRadius.pill),
         child: Container(
           width: 34,
@@ -477,7 +628,7 @@ class _SaveCollectionButton extends StatelessWidget {
       context,
       initialName: 'Similar photos',
       initialQuery: 'photos that look like this one',
-      onSave: (name, _) async {
+      onSave: (name, _, __) async {
         final created = await collections.saveImageSearchAsCollection(
           name: name,
         );
@@ -512,8 +663,11 @@ class _SaveCollectionButton extends StatelessWidget {
       context,
       initialName: query,
       initialQuery: query,
-      onSave: (name, _) async {
-        final created = await collections.saveSearchAsCollection(name: name);
+      onSave: (name, _, __) async {
+        final created = await collections.saveSearchAsCollection(
+          name: name,
+          personIds: controller.lastMentionedPersonIds,
+        );
         if (created == null) return;
         messenger.showSnackBar(
           SnackBar(

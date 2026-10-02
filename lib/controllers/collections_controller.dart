@@ -269,6 +269,7 @@ class CollectionsController extends GetxController {
     'embedding': await _embeddingFor(c),
     'contentMode': c.contentMode,
     'k': c.sensitivity,
+    if (c.personIds.isNotEmpty) 'personIds': c.personIds,
   };
 
   // Throws away every cached query embedding and score and redoes them from
@@ -402,15 +403,28 @@ class CollectionsController extends GetxController {
 
   // ---- Create / edit ----
 
-  /// Turns the search that's currently showing into a collection.
-  Future<SmartCollection?> saveSearchAsCollection({required String name}) async {
+  /// Turns the search that's currently showing into a collection. A
+  /// personIds override lets the caller pass the search's own mentioned
+  /// people explicitly (search_tab.dart snapshots them onto the controller
+  /// right when the search runs, since searchTextController may have since
+  /// been edited for a *different*, not-yet-run search by the time this is
+  /// called) - falls back to whatever's on the controller now otherwise.
+  Future<SmartCollection?> saveSearchAsCollection({
+    required String name,
+    List<int>? personIds,
+  }) async {
     final native = Get.find<NativeController>();
     final query = native.lastTextQuery;
-    if (query == null || query.trim().isEmpty) return null;
+    final ids = personIds ?? native.lastMentionedPersonIds;
+    // A pure "@Raseel" mention with no other words is still a real,
+    // saveable search - only bail out if there's neither text nor anyone
+    // mentioned at all.
+    if ((query == null || query.trim().isEmpty) && ids.isEmpty) return null;
     return createCollection(
       name: name,
-      query: query.trim(),
+      query: query?.trim() ?? '',
       contentMode: native.getContentModeString(contentMode: native.searchContentMode),
+      personIds: ids,
     );
   }
 
@@ -454,15 +468,23 @@ class CollectionsController extends GetxController {
     required String name,
     required String query,
     String contentMode = 'both',
+    List<int> personIds = const [],
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
+    // A pure "@Raseel" collection has no real topic to embed - CLIP needs
+    // *something* to score against, so this falls back to a generic prompt
+    // rather than embedding an empty string. The person filter (applied
+    // natively - see _specFor) still does the actual narrowing; this just
+    // keeps the z-score step from operating on a meaningless embedding.
+    final effectiveQuery = query.trim().isEmpty ? 'a photo' : query.trim();
     return _addAndSync(
       SmartCollection(
         id: 'user_$now',
         name: name.trim().isEmpty ? query : name.trim(),
-        prompts: [query],
+        prompts: [effectiveQuery],
         contentMode: contentMode,
         createdAt: now,
+        personIds: personIds,
       ),
     );
   }
@@ -492,7 +514,8 @@ class CollectionsController extends GetxController {
     final matchesChanged = before == null ||
         before.embeddingSignature != fresh.embeddingSignature ||
         before.contentMode != fresh.contentMode ||
-        before.sensitivity != fresh.sensitivity;
+        before.sensitivity != fresh.sensitivity ||
+        !listEquals(before.personIds, fresh.personIds);
 
     if (active?.id == updated.id) {
       if (matchesChanged) {

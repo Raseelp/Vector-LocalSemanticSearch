@@ -836,10 +836,17 @@ class EmbeddingEngine(
         }
     }
 
+    // [pathFilter], when given, restricts the scan to records whose own path (a photo's own
+    // uri, or a video frame's videoUri - the two coincide, see the dedup key below) is in the
+    // set - the "person" half of a combined "person + words" search. It's a plain path set
+    // rather than anything face-specific, so this stays a generic embedding search that
+    // whoever resolves a person to their photos (FaceStore, on the caller's side) can restrict
+    // without EmbeddingEngine needing to know people exist at all.
     fun searchByText(
         textEmbedding: FloatArray,
         topK: Int = 20,
-        contentFilter: String = "both"
+        contentFilter: String = "both",
+        pathFilter: Set<String>? = null
     ): List<SearchResult> {
         if (topK <= 0) return emptyList()
 
@@ -847,6 +854,7 @@ class EmbeddingEngine(
 
         for (record in store.readAll()) {
             if (!matchesContentFilter(record, contentFilter)) continue
+            if (pathFilter != null && record.imagePath !in pathFilter) continue
 
             val score = EmbeddingMath.dot(textEmbedding, record.embedding)
 
@@ -924,7 +932,18 @@ class EmbeddingEngine(
         val embedding: FloatArray,
         val contentMode: String,
         // Standard deviations above the library-wide mean an item must reach.
-        val k: Double
+        val k: Double,
+        // A collection made from an "@name" search - raw ids as parsed off
+        // the channel call, resolved to pathFilter below via FaceStore by
+        // MainActivity.resolvePathFilters, off the UI thread (a real SQLite
+        // read, same reason searchByText's own resolution happens inside
+        // its own background block rather than before it).
+        val personIds: List<Long> = emptyList(),
+        // Restricts membership to just that person's (or people's) shared
+        // photos/videos - the mean/sigma below end up computed relative to
+        // that restricted set too, not the whole library, since
+        // filtered-out records never enter the running sum.
+        val pathFilter: Set<String>? = null
     )
 
     data class CollectionScore(
@@ -949,7 +968,8 @@ class EmbeddingEngine(
             // be compared - skip it rather than let one bad record crash the
             // whole scoring pass.
             if (!matchesContentFilter(record, spec.contentMode) ||
-                record.embedding.size != spec.embedding.size
+                record.embedding.size != spec.embedding.size ||
+                (spec.pathFilter != null && record.imagePath !in spec.pathFilter)
             ) {
                 scores[i] = Float.NaN
                 continue
@@ -961,15 +981,30 @@ class EmbeddingEngine(
             sumSq += score.toDouble() * score
         }
 
-        if (n < 2) return emptyList()
+        if (n == 0) return emptyList()
 
-        val mean = sum / n
-        val variance = (sumSq / n) - mean * mean
-        val sigma = kotlin.math.sqrt(kotlin.math.max(variance, 0.0))
-        // A flat score distribution has no outliers to call members.
-        if (sigma < 1e-6) return emptyList()
+        // A person filter ("@name") is already the membership criterion on
+        // its own - everyone it lets through counts, ranked by text score
+        // for display order only. The z-score outlier test below is meant
+        // for finding genuine standouts across the *whole* library; run on
+        // an already-narrowed, often small and visually similar set (one
+        // person's own photos) there's too little variance for it to work -
+        // it was rejecting almost everything, sometimes literally
+        // everything (a flat distribution, or fewer than 2 comparable
+        // records, used to return no members at all no matter how many
+        // photos actually matched).
+        val threshold = if (spec.pathFilter != null) {
+            Double.NEGATIVE_INFINITY
+        } else {
+            if (n < 2) return emptyList()
+            val mean = sum / n
+            val variance = (sumSq / n) - mean * mean
+            val sigma = kotlin.math.sqrt(kotlin.math.max(variance, 0.0))
+            // A flat score distribution has no outliers to call members.
+            if (sigma < 1e-6) return emptyList()
+            mean + spec.k * sigma
+        }
 
-        val threshold = mean + spec.k * sigma
         val bestPerKey = mutableMapOf<String, SearchResult>()
 
         for ((i, record) in records.withIndex()) {

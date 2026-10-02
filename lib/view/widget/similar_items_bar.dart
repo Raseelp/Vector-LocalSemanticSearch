@@ -180,7 +180,12 @@ class _TrayActionPill extends StatelessWidget {
 }
 
 class _SimilarTile extends StatelessWidget {
-  const _SimilarTile({required this.index, required this.isVideo, required this.bytes, required this.onTap});
+  const _SimilarTile({
+    required this.index,
+    required this.isVideo,
+    required this.bytes,
+    required this.onTap,
+  });
 
   final int index;
   final bool isVideo;

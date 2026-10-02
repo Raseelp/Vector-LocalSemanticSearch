@@ -9,6 +9,7 @@ import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
+import 'package:twentyonevision/utils/media_view_route.dart';
 import 'package:twentyonevision/view/image_full_screen.dart';
 import 'package:twentyonevision/view/person_screen.dart';
 import 'package:twentyonevision/view/widget/draggable_metadata_sheet.dart';
@@ -39,7 +40,8 @@ class VideoViewScreen extends StatefulWidget {
   State<VideoViewScreen> createState() => _VideoViewScreenState();
 }
 
-class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProviderStateMixin {
+class _VideoViewScreenState extends State<VideoViewScreen>
+    with SingleTickerProviderStateMixin {
   late VideoPlayerController _controller;
   bool _initialized = false;
   bool _showControls = true;
@@ -78,9 +80,13 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
   // The transition from the strip to the head: while the video jumps to the moment, the
   // person's face flies from the strip to where their head is, and the outline draws when it
   // lands - by then the new picture is on screen, so the outline never appears on an old frame.
-  late final AnimationController _flightCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 700));
+  late final AnimationController _flightCtrl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 700),
+  );
   FaceFlight? _flight;
-  RingEntry? _ringEntry; // the look shared by the flight and the outline that takes over
+  RingEntry?
+  _ringEntry; // the look shared by the flight and the outline that takes over
   int _jumpId = 0;
   final GlobalKey _videoBox = GlobalKey();
 
@@ -91,7 +97,8 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
 
   // ---- "Similar to this": the strip opened once a frame has been picked ----
   bool _similarOpen = false;
-  int? _similarFrameMs; // the frame the strip (and "search with this" below it) is for
+  int?
+  _similarFrameMs; // the frame the strip (and "search with this" below it) is for
 
   // ---- scanning the whole video (when the user asks) while it plays ----
   // 'needs' (not scanned yet), 'done', 'unavailable' (not indexed / models not ready), or
@@ -156,7 +163,8 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
     _controller.dispose();
     // Coming back to the results, the search box was getting its focus (and keyboard) back.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (Get.isRegistered<NativeController>()) Get.find<NativeController>().searchFocusNode.unfocus();
+      if (Get.isRegistered<NativeController>())
+        Get.find<NativeController>().searchFocusNode.unfocus();
     });
     super.dispose();
   }
@@ -173,7 +181,9 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
       }
       // Being scanned right now (by the background scan, or a visit to this video before): show
       // the same glow and progress, and pick the people up when it finishes.
-      final running = await NativeServices().photoScanStatus('video:${widget.videoUri}');
+      final running = await NativeServices().photoScanStatus(
+        'video:${widget.videoUri}',
+      );
       if (running != null && mounted && !_scanningVideo) _watchRunningScan();
     } catch (_) {
       if (mounted) setState(() => _scanState = 'unavailable');
@@ -185,7 +195,12 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
   _ToastData? _toast;
   Timer? _toastTimer;
 
-  void _say(String title, {String? subtitle, List<int> faces = const [], int seconds = 4}) {
+  void _say(
+    String title, {
+    String? subtitle,
+    List<int> faces = const [],
+    int seconds = 4,
+  }) {
     _toastTimer?.cancel();
     setState(() => _toast = _ToastData(title, subtitle, faces));
     _toastTimer = Timer(Duration(seconds: seconds), () {
@@ -202,7 +217,10 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
   // Tapping it again scans again (and replaces what the first scan found).
   void _onScanButton() {
     if (_scanningVideo) {
-      _say('Still scanning', subtitle: 'The people show up on the People button when it is done.');
+      _say(
+        'Still scanning',
+        subtitle: 'The people show up on the People button when it is done.',
+      );
       return;
     }
     // Scanned or not, tapping scans (again): a second look replaces the first.
@@ -210,7 +228,10 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
       _explainLevel();
       _startScan();
     } else {
-      _say("Can't scan this video yet", subtitle: "The face models or the search index aren't ready.");
+      _say(
+        "Can't scan this video yet",
+        subtitle: "The face models or the search index aren't ready.",
+      );
     }
   }
 
@@ -220,8 +241,11 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
     if (_scanLevel <= 0) return;
     if (_lastFaces == 0) {
       _say(
-        _scanLevel >= 2 ? 'Searching as loosely as possible' : 'Searching less strictly',
-        subtitle: 'Nothing was found last time, so smaller and blurrier faces count now, and more frames are checked.',
+        _scanLevel >= 2
+            ? 'Searching as loosely as possible'
+            : 'Searching less strictly',
+        subtitle:
+            'Nothing was found last time, so smaller and blurrier faces count now, and more frames are checked.',
       );
     } else {
       _say('Using a looser search', subtitle: 'The setting this video needed.');
@@ -234,9 +258,13 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
       _videoMessage = 'Scanning the video';
     });
     _videoPoll?.cancel();
-    _videoPoll = Timer.periodic(const Duration(milliseconds: 300), (timer) async {
+    _videoPoll = Timer.periodic(const Duration(milliseconds: 300), (
+      timer,
+    ) async {
       try {
-        final status = await NativeServices().photoScanStatus('video:${widget.videoUri}');
+        final status = await NativeServices().photoScanStatus(
+          'video:${widget.videoUri}',
+        );
         if (!mounted) {
           timer.cancel();
           return;
@@ -275,8 +303,13 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
     _videoPoll?.cancel();
     _videoPoll = Timer.periodic(const Duration(milliseconds: 300), (_) async {
       try {
-        final status = await NativeServices().photoScanStatus('video:${widget.videoUri}');
-        if (mounted && _scanningVideo && status != null && status.message != _videoMessage) {
+        final status = await NativeServices().photoScanStatus(
+          'video:${widget.videoUri}',
+        );
+        if (mounted &&
+            _scanningVideo &&
+            status != null &&
+            status.message != _videoMessage) {
           setState(() => _videoMessage = status.message);
         }
       } catch (_) {}
@@ -284,7 +317,10 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
 
     var result = VideoScanResult(false, 0, 0);
     try {
-      result = await NativeServices().scanVideoFaces(widget.videoUri, token: _scanToken);
+      result = await NativeServices().scanVideoFaces(
+        widget.videoUri,
+        token: _scanToken,
+      );
     } catch (_) {
       // The video plays fine without it.
     }
@@ -305,7 +341,11 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
               : 'Tap the scan button again to search less strictly.',
         );
       } else if (_people.isEmpty) {
-        _say('Faces found, but no one listed', subtitle: 'No one showed up often enough. Tap the scan button to look again.');
+        _say(
+          'Faces found, but no one listed',
+          subtitle:
+              'No one showed up often enough. Tap the scan button to look again.',
+        );
       } else {
         // The number of people the People button shows - not the count of faces kept (one person has several).
         final n = _people.length;
@@ -335,7 +375,9 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
       setState(() {
         if (grew) _peoplePulse++;
         _people = found;
-        if (_focusPerson != null && !found.any((p) => p.person.id == _focusPerson)) _focusPerson = null;
+        if (_focusPerson != null &&
+            !found.any((p) => p.person.id == _focusPerson))
+          _focusPerson = null;
       });
     } catch (_) {
       // No strip - the video plays as ever.
@@ -348,7 +390,8 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
     if (!_initialized || _pickingFrame) return;
     final v = _controller.value;
     if (v.isPlaying) {
-      if (!_wasPlaying || _faces.isNotEmpty || _looking || _stillTimer != null) _leaveStill();
+      if (!_wasPlaying || _faces.isNotEmpty || _looking || _stillTimer != null)
+        _leaveStill();
       _wasPlaying = true;
       return;
     }
@@ -384,7 +427,10 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
       // Faces from another moment don't belong on this one.
       _faces = const [];
       _selectedFace = null;
-      _stillTimer = Timer(const Duration(milliseconds: 450), () => _lookAt(_controller.value.position.inMilliseconds));
+      _stillTimer = Timer(
+        const Duration(milliseconds: 450),
+        () => _lookAt(_controller.value.position.inMilliseconds),
+      );
     }
   }
 
@@ -408,7 +454,8 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
   void _cancelPending() {
     final token = _pendingToken;
     _pendingToken = null;
-    if (token != null) NativeServices().cancelPhotoFaces(token).catchError((_) {});
+    if (token != null)
+      NativeServices().cancelPhotoFaces(token).catchError((_) {});
   }
 
   // [merge]: a quiet second look at a moment whose outlines are already up (from the scan): it
@@ -434,8 +481,14 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
         _poll?.cancel();
         _poll = Timer.periodic(const Duration(milliseconds: 250), (_) async {
           try {
-            final status = await NativeServices().photoScanStatus('${widget.videoUri}#$pos');
-            if (mounted && id == _request && _looking && status != null && status.message != _scanMessage) {
+            final status = await NativeServices().photoScanStatus(
+              '${widget.videoUri}#$pos',
+            );
+            if (mounted &&
+                id == _request &&
+                _looking &&
+                status != null &&
+                status.message != _scanMessage) {
               setState(() => _scanMessage = status.message);
             }
           } catch (_) {}
@@ -445,7 +498,11 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
 
     var found = const <PhotoFace>[];
     try {
-      found = await NativeServices().videoFaces(widget.videoUri, pos, token: token);
+      found = await NativeServices().videoFaces(
+        widget.videoUri,
+        pos,
+        token: token,
+      );
     } catch (_) {
       // Nothing to tap - the video is still fully usable.
     }
@@ -469,7 +526,9 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
       _ringEntry = null;
       _faces = found;
       _layerKey++;
-      _selectedFace = want == null ? null : found.where((f) => f.person.id == want).firstOrNull;
+      _selectedFace = want == null
+          ? null
+          : found.where((f) => f.person.id == want).firstOrNull;
       _looking = false;
     });
     // Whoever was named in this frame joins the video's list of people (the scan may have missed them).
@@ -477,12 +536,15 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
   }
 
   Future<void> _openPerson(Person person) async {
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => PersonScreen(person: person)));
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => PersonScreen(person: person)));
     // They may have been renamed, merged or hidden there.
     if (mounted) _loadPeople();
   }
 
-  bool _jumpBusy = false; // a jump from the panel is under way (the ordinary look at a paused frame waits)
+  bool _jumpBusy =
+      false; // a jump from the panel is under way (the ordinary look at a paused frame waits)
 
   // A face in the panel: jump to where they appear (and on again to their next moment) and point at
   // them. Where the scan stored their position it is used at once; where it didn't (an older scan,
@@ -495,14 +557,19 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
     final pos = _controller.value.position.inMilliseconds;
     final int target;
     if (_focusPerson == p.person.id) {
-      target = moments.firstWhere((t) => t > pos + 800, orElse: () => moments.first);
+      target = moments.firstWhere(
+        (t) => t > pos + 800,
+        orElse: () => moments.first,
+      );
     } else {
       target = moments.first;
     }
     if (_peopleOpen) setState(() => _peopleOpen = false);
 
     // Already paused right there with the faces found: just point at them.
-    if (!_controller.value.isPlaying && _faces.isNotEmpty && (target - pos).abs() < 250) {
+    if (!_controller.value.isPlaying &&
+        _faces.isNotEmpty &&
+        (target - pos).abs() < 250) {
       final here = _faces.where((f) => f.person.id == p.person.id).firstOrNull;
       if (here != null) {
         _autoSelect = null;
@@ -537,8 +604,13 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
       PhotoFace? want;
       var fromScan = false;
       try {
-        final stored = await NativeServices().videoFrameFaces(widget.videoUri, target);
-        final mine = stored.faces.where((f) => f.person.id == p.person.id).firstOrNull;
+        final stored = await NativeServices().videoFrameFaces(
+          widget.videoUri,
+          target,
+        );
+        final mine = stored.faces
+            .where((f) => f.person.id == p.person.id)
+            .firstOrNull;
         if (stored.exact && mine != null) {
           faces = stored.faces;
           want = mine;
@@ -557,7 +629,11 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
           _scanMessage = 'Looking for faces';
         });
         try {
-          faces = await NativeServices().videoFaces(widget.videoUri, target, token: _token + jump + 1000000);
+          faces = await NativeServices().videoFaces(
+            widget.videoUri,
+            target,
+            token: _token + jump + 1000000,
+          );
         } catch (_) {}
         if (!mounted || jump != _jumpId) return;
         setState(() => _looking = false);
@@ -576,7 +652,8 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
         });
         _say(
           "Couldn't point out ${p.person.name ?? 'them'} here",
-          subtitle: "Their face isn't clear at this moment. Tap them again to go to another.",
+          subtitle:
+              "Their face isn't clear at this moment. Tap them again to go to another.",
         );
         return;
       }
@@ -584,7 +661,9 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
       // 2. Their face flies to the head and becomes the outline.
       Future<void>? flying;
       final box = _videoBox.currentContext?.findRenderObject() as RenderBox?;
-      final spot = (box != null && box.hasSize) ? headSpotFor(want, box.size) : null;
+      final spot = (box != null && box.hasSize)
+          ? headSpotFor(want, box.size)
+          : null;
       if (box != null && spot != null) {
         final to = box.localToGlobal(spot.center);
         final entry = RingEntry.random();
@@ -602,7 +681,11 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
         // screen (however long the video takes to get there) before the hand-over.
         _flightCtrl.value = 0;
         flying = _flightCtrl
-            .animateTo(FaceFlightOverlay.landingAt, duration: const Duration(milliseconds: 620), curve: Curves.linear)
+            .animateTo(
+              FaceFlightOverlay.landingAt,
+              duration: const Duration(milliseconds: 620),
+              curve: Curves.linear,
+            )
             .orCancel
             .then((_) {}, onError: (_) {});
       } else {
@@ -630,12 +713,17 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
       });
       // A quiet look afterwards for anyone else in the picture that wasn't stored.
       Future.delayed(const Duration(milliseconds: 800), () {
-        if (mounted && _instantMs == target && !_controller.value.isPlaying) _lookAt(target, merge: true);
+        if (mounted && _instantMs == target && !_controller.value.isPlaying)
+          _lookAt(target, merge: true);
       });
       // The outline is drawing in now; the circle-turned-band melts into it.
       if (_flight != null) {
         await _flightCtrl
-            .animateTo(1.0, duration: const Duration(milliseconds: 160), curve: Curves.easeOut)
+            .animateTo(
+              1.0,
+              duration: const Duration(milliseconds: 160),
+              curve: Curves.easeOut,
+            )
             .orCancel
             .then((_) {}, onError: (_) {});
         if (mounted && jump == _jumpId) setState(() => _flight = null);
@@ -653,7 +741,8 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
     for (var i = 0; i < 30; i++) {
       if (!mounted || jump != _jumpId) return;
       final v = _controller.value;
-      if ((v.position.inMilliseconds - target).abs() < 200 && !v.isBuffering) break;
+      if ((v.position.inMilliseconds - target).abs() < 200 && !v.isBuffering)
+        break;
       await Future.delayed(const Duration(milliseconds: 40));
     }
     await Future.delayed(const Duration(milliseconds: 140));
@@ -710,13 +799,17 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
   }
 
   void _confirmFrameSearch(NativeController nativeController) {
-    final positionMs = _similarFrameMs ?? _controller.value.position.inMilliseconds;
+    final positionMs =
+        _similarFrameMs ?? _controller.value.position.inMilliseconds;
     // All the way back to the home screen (this may have been opened from
     // inside a collection, not straight from the results), on the Search
     // tab, then search - not awaited, the results grid shows its own
     // loading state.
     Navigator.of(context).popUntil((route) => route.isFirst);
-    nativeController.searchWithVideoFrame(uri: widget.videoUri, timestampMs: positionMs);
+    nativeController.searchWithVideoFrame(
+      uri: widget.videoUri,
+      timestampMs: positionMs,
+    );
   }
 
   // How long the strip takes to fade away, here and in build()'s AnimatedSwitcher - shared so
@@ -734,18 +827,22 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
     void push() {
       if (isVideo) {
         Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => VideoViewScreen(videoUri: itemUri, timestampMs: timestampMs, thumbnailBytes: bytes),
+          mediaViewRoute(
+            (_) => VideoViewScreen(
+              videoUri: itemUri,
+              timestampMs: timestampMs,
+              thumbnailBytes: bytes,
+            ),
           ),
         );
       } else {
-        // Plain Navigator, not Get.to: Get.to's default preventDuplicates treats pushing the
-        // same widget type as "already here" and quietly does nothing, which would only ever
-        // bite for VideoViewScreen -> VideoViewScreen - not this branch - but Navigator.push
-        // has no such trap either way, so it's the one to use consistently here too.
         Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => ImageViewScreen(imageBytes: bytes, uri: itemUri, loadFullRes: true),
+          mediaViewRoute(
+            (_) => ImageViewScreen(
+              imageBytes: bytes,
+              uri: itemUri,
+              loadFullRes: true,
+            ),
           ),
         );
       }
@@ -782,329 +879,416 @@ class _VideoViewScreenState extends State<VideoViewScreen> with SingleTickerProv
       builder: (nativeController) => AnnotatedRegion<SystemUiOverlayStyle>(
         value: kMediaOverlayStyle,
         child: Scaffold(
-        backgroundColor: Colors.black,
-        body: Stack(
-          fit: StackFit.expand,
-          children: [
-            GestureDetector(
-              onTap: () {
-                if (_peopleOpen) {
-                  setState(() => _peopleOpen = false);
-                } else if (_similarOpen) {
-                  _closeSimilar(nativeController);
-                } else if (_selectedFace != null) {
-                  setState(() => _selectedFace = null);
-                } else {
-                  _toggleControls();
-                }
-              },
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Center(
-                    child: ready
-                        ? AspectRatio(
-                            key: _videoBox,
-                            aspectRatio: _controller.value.aspectRatio,
-                            child: VideoPlayer(_controller),
-                          )
-                        : Image.memory(widget.thumbnailBytes, fit: BoxFit.contain),
-                  ),
-
-                  if (!_initialized && _initError == null)
-                    const Center(child: CircularProgressIndicator(color: Colors.white)),
-
-                  if (_initError != null)
+          backgroundColor: Colors.black,
+          body: Stack(
+            fit: StackFit.expand,
+            children: [
+              GestureDetector(
+                onTap: () {
+                  if (_peopleOpen) {
+                    setState(() => _peopleOpen = false);
+                  } else if (_similarOpen) {
+                    _closeSimilar(nativeController);
+                  } else if (_selectedFace != null) {
+                    setState(() => _selectedFace = null);
+                  } else {
+                    _toggleControls();
+                  }
+                },
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
                     Center(
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(horizontal: AppSpacing.xxl),
-                        padding: const EdgeInsets.all(AppSpacing.lg),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.6),
-                          borderRadius: BorderRadius.circular(AppRadius.xl),
-                        ),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(
-                              Icons.error_outline_rounded,
-                              color: Colors.white70,
-                              size: 36,
+                      child: ready
+                          ? AspectRatio(
+                              key: _videoBox,
+                              aspectRatio: _controller.value.aspectRatio,
+                              child: VideoPlayer(_controller),
+                            )
+                          : Image.memory(
+                              widget.thumbnailBytes,
+                              fit: BoxFit.contain,
                             ),
-                            const SizedBox(height: AppSpacing.md),
-                            Text(
-                              _initError!,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
                     ),
 
-                  // The paused frame's people, over exactly the picture. Beneath the controls, so a head that
-                  // lies under the seek bar or a button never takes a tap meant for it; everywhere else a
-                  // tap on a head is theirs, and any other tap falls through to the video.
-                  if (ready && _faces.isNotEmpty && !_controller.value.isPlaying && !_pickingFrame)
-                    Positioned.fill(
-                      child: Center(
-                        child: AspectRatio(
-                          aspectRatio: _controller.value.aspectRatio,
-                          child: PhotoFacesLayer(
-                            key: ValueKey(_layerKey),
-                            entry: _ringEntry,
-                            faces: _faces,
-                            transform: _still,
-                            selected: _selectedFace,
-                            onSelect: (face) => setState(() => _selectedFace = face),
-                            onOpen: _openPerson,
-                            bottomInset: 96,
+                    if (!_initialized && _initError == null)
+                      const Center(
+                        child: CircularProgressIndicator(color: Colors.white),
+                      ),
+
+                    if (_initError != null)
+                      Center(
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(
+                            horizontal: AppSpacing.xxl,
+                          ),
+                          padding: const EdgeInsets.all(AppSpacing.lg),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.6),
+                            borderRadius: BorderRadius.circular(AppRadius.xl),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.error_outline_rounded,
+                                color: Colors.white70,
+                                size: 36,
+                              ),
+                              const SizedBox(height: AppSpacing.md),
+                              Text(
+                                _initError!,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
-                    ),
 
-                  if (_showControls)
-                    AnimatedOpacity(
-                      opacity: _showControls ? 1.0 : 0.0,
-                      duration: const Duration(milliseconds: 200),
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          // The top scrim: only a picture, never in the way of a tap.
-                          if (ready)
-                            IgnorePointer(
-                              child: DecoratedBox(
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topCenter,
-                                    end: Alignment.bottomCenter,
-                                    colors: [
-                                      Colors.black.withValues(alpha: 0.36),
-                                      Colors.transparent,
-                                      Colors.transparent,
-                                    ],
-                                    stops: const [0, 0.16, 1],
+                    // The paused frame's people, over exactly the picture. Beneath the controls, so a head that
+                    // lies under the seek bar or a button never takes a tap meant for it; everywhere else a
+                    // tap on a head is theirs, and any other tap falls through to the video.
+                    if (ready &&
+                        _faces.isNotEmpty &&
+                        !_controller.value.isPlaying &&
+                        !_pickingFrame)
+                      Positioned.fill(
+                        child: Center(
+                          child: AspectRatio(
+                            aspectRatio: _controller.value.aspectRatio,
+                            child: PhotoFacesLayer(
+                              key: ValueKey(_layerKey),
+                              entry: _ringEntry,
+                              faces: _faces,
+                              transform: _still,
+                              selected: _selectedFace,
+                              onSelect: (face) =>
+                                  setState(() => _selectedFace = face),
+                              onOpen: _openPerson,
+                              bottomInset: 96,
+                            ),
+                          ),
+                        ),
+                      ),
+
+                    if (_showControls)
+                      AnimatedOpacity(
+                        opacity: _showControls ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 200),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            // The top scrim: only a picture, never in the way of a tap.
+                            if (ready)
+                              IgnorePointer(
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topCenter,
+                                      end: Alignment.bottomCenter,
+                                      colors: [
+                                        Colors.black.withValues(alpha: 0.36),
+                                        Colors.transparent,
+                                        Colors.transparent,
+                                      ],
+                                      stops: const [0, 0.16, 1],
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                          Column(
-                          children: [
-                            SafeArea(
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: AppSpacing.sm,
-                                  vertical: AppSpacing.xs,
-                                ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    MediaChromeButton(
-                                      icon: Icons.close,
-                                      tooltip: 'Close',
-                                      onTap: () => Navigator.of(context).pop(),
+                            Column(
+                              children: [
+                                SafeArea(
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: AppSpacing.sm,
+                                      vertical: AppSpacing.xs,
                                     ),
-                                    Row(
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
                                       children: [
-                                        // Find the people in this whole video (videos only).
-                                        if (_scanState != null && _scanState != 'unavailable') ...[
-                                          MediaChromeButton(
-                                            icon: Icons.face_retouching_natural,
-                                            tooltip: _scanState == 'done'
-                                                ? (_lastFaces == 0 ? 'Scan again, less strictly' : 'Scan this video again')
-                                                : 'Find people in this video',
-                                            active: _scanningVideo || _scanState == 'done',
-                                            onTap: _onScanButton,
-                                          ),
-                                          const SizedBox(width: AppSpacing.sm),
-                                        ],
                                         MediaChromeButton(
-                                          icon: (_pickingFrame || _similarOpen)
-                                              ? Icons.image_search
-                                              : Icons.image_search_rounded,
-                                          tooltip: _pickingFrame
-                                              ? 'Cancel frame search'
-                                              : (_similarOpen ? 'Hide similar' : 'Search with a frame from this video'),
-                                          active: _similarOpen,
-                                          onTap: () {
-                                            if (_pickingFrame) {
-                                              _cancelFramePicking();
-                                            } else if (_similarOpen) {
-                                              _closeSimilar(nativeController);
-                                            } else {
-                                              _enterFramePicking(nativeController);
-                                            }
-                                          },
+                                          icon: Icons.close,
+                                          tooltip: 'Close',
+                                          onTap: () =>
+                                              Navigator.of(context).pop(),
                                         ),
-                                        const SizedBox(width: AppSpacing.sm),
-                                        MediaChromeButton(
-                                          icon: Icons.ios_share_rounded,
-                                          tooltip: 'Share and save',
-                                          onTap: () => showMediaActionsSheet(
-                                            context,
-                                            uri: widget.videoUri,
-                                            isVideo: true,
-                                            controller: nativeController,
-                                          ),
-                                        ),
-                                        const SizedBox(width: AppSpacing.sm),
-                                        MediaChromeButton(
-                                          icon: nativeController.showMetadata
-                                              ? Icons.info
-                                              : Icons.info_outline,
-                                          tooltip: 'Details',
-                                          onTap: nativeController.toggleMetadata,
+                                        Row(
+                                          children: [
+                                            // Find the people in this whole video (videos only).
+                                            if (_scanState != null &&
+                                                _scanState !=
+                                                    'unavailable') ...[
+                                              MediaChromeButton(
+                                                icon: Icons
+                                                    .face_retouching_natural,
+                                                tooltip: _scanState == 'done'
+                                                    ? (_lastFaces == 0
+                                                          ? 'Scan again, less strictly'
+                                                          : 'Scan this video again')
+                                                    : 'Find people in this video',
+                                                active:
+                                                    _scanningVideo ||
+                                                    _scanState == 'done',
+                                                onTap: _onScanButton,
+                                              ),
+                                              const SizedBox(
+                                                width: AppSpacing.sm,
+                                              ),
+                                            ],
+                                            MediaChromeButton(
+                                              icon:
+                                                  (_pickingFrame ||
+                                                      _similarOpen)
+                                                  ? Icons.image_search
+                                                  : Icons.image_search_rounded,
+                                              tooltip: _pickingFrame
+                                                  ? 'Cancel frame search'
+                                                  : (_similarOpen
+                                                        ? 'Hide similar'
+                                                        : 'Search with a frame from this video'),
+                                              active: _similarOpen,
+                                              onTap: () {
+                                                if (_pickingFrame) {
+                                                  _cancelFramePicking();
+                                                } else if (_similarOpen) {
+                                                  _closeSimilar(
+                                                    nativeController,
+                                                  );
+                                                } else {
+                                                  _enterFramePicking(
+                                                    nativeController,
+                                                  );
+                                                }
+                                              },
+                                            ),
+                                            const SizedBox(
+                                              width: AppSpacing.sm,
+                                            ),
+                                            MediaChromeButton(
+                                              icon: Icons.ios_share_rounded,
+                                              tooltip: 'Share and save',
+                                              onTap: () =>
+                                                  showMediaActionsSheet(
+                                                    context,
+                                                    uri: widget.videoUri,
+                                                    isVideo: true,
+                                                    controller:
+                                                        nativeController,
+                                                  ),
+                                            ),
+                                            const SizedBox(
+                                              width: AppSpacing.sm,
+                                            ),
+                                            MediaChromeButton(
+                                              icon:
+                                                  nativeController.showMetadata
+                                                  ? Icons.info
+                                                  : Icons.info_outline,
+                                              tooltip: 'Details',
+                                              onTap: nativeController
+                                                  .toggleMetadata,
+                                            ),
+                                          ],
                                         ),
                                       ],
                                     ),
-                                  ],
+                                  ),
                                 ),
-                              ),
+
+                                if (_pickingFrame) const _FramePickHint(),
+
+                                const Spacer(),
+
+                                if (ready && _pickingFrame)
+                                  _FramePickBar(
+                                    controller: _controller,
+                                    formatDuration: _formatDuration,
+                                    onCancel: _cancelFramePicking,
+                                    onSearch: () =>
+                                        _showSimilarForFrame(nativeController),
+                                  ),
+
+                                if (ready && !_pickingFrame)
+                                  _VideoControlsBar(
+                                    controller: _controller,
+                                    formatDuration: _formatDuration,
+                                    markers:
+                                        _people
+                                            .where(
+                                              (p) =>
+                                                  p.person.id == _focusPerson,
+                                            )
+                                            .firstOrNull
+                                            ?.times ??
+                                        const [],
+                                    peopleCount: _people.length,
+                                    peopleOpen: _peopleOpen,
+                                    peoplePulse: _peoplePulse,
+                                    onPlayPause: () {
+                                      _autoSelect = null;
+                                      _controller.value.isPlaying
+                                          ? _controller.pause()
+                                          : _controller.play();
+                                    },
+                                    onPeople: () => setState(() {
+                                      _peopleOpen = !_peopleOpen;
+                                      if (_peopleOpen && _similarOpen) {
+                                        _similarOpen = false;
+                                        nativeController.clearSimilar();
+                                      }
+                                    }),
+                                  ),
+                              ],
                             ),
-
-                            if (_pickingFrame) const _FramePickHint(),
-
-                            const Spacer(),
-
-                            if (ready && _pickingFrame)
-                              _FramePickBar(
-                                controller: _controller,
-                                formatDuration: _formatDuration,
-                                onCancel: _cancelFramePicking,
-                                onSearch: () => _showSimilarForFrame(nativeController),
-                              ),
-
-                            if (ready && !_pickingFrame)
-                              _VideoControlsBar(
-                                controller: _controller,
-                                formatDuration: _formatDuration,
-                                markers: _people.where((p) => p.person.id == _focusPerson).firstOrNull?.times ?? const [],
-                                peopleCount: _people.length,
-                                peopleOpen: _peopleOpen,
-                                peoplePulse: _peoplePulse,
-                                onPlayPause: () {
-                                  _autoSelect = null;
-                                  _controller.value.isPlaying ? _controller.pause() : _controller.play();
-                                },
-                                onPeople: () => setState(() {
-                                  _peopleOpen = !_peopleOpen;
-                                  if (_peopleOpen && _similarOpen) {
-                                    _similarOpen = false;
-                                    nativeController.clearSimilar();
-                                  }
-                                }),
-                              ),
                           ],
                         ),
-                        ],
                       ),
-                    ),
 
-                  // The quiet "looking" glow and what it is doing.
-                  if (ready)
-                    Positioned.fill(
-                      child: PhotoScanGlow(
-                        visible: _scanningVideo || _looking,
-                        // The whole-video scan is the bigger thing: it speaks first.
-                        message: _scanningVideo ? _videoMessage : _scanMessage,
-                        bottomInset: 96,
-                      ),
-                    ),
-
-                  // The people in this video (from the button): above the picture's outlines, so its taps
-                  // are never taken by a head underneath.
-                  if (ready && _people.isNotEmpty && _peopleOpen && _showControls)
-                    Positioned(
-                      left: AppSpacing.base,
-                      right: AppSpacing.base,
-                      bottom: MediaQuery.of(context).padding.bottom + 112,
-                      child: VideoPeoplePanel(people: _people, focusedId: _focusPerson, onTap: _jumpToPerson),
-                    ),
-
-                  // "Similar to this frame": shown once a frame has been picked, above the
-                  // controls bar the same way the people panel is. AnimatedSwitcher rather than
-                  // gating the whole Positioned on _similarOpen: closing (by hand, or
-                  // automatically before _openSimilarItem navigates away) fades it out instead
-                  // of cutting it off dead.
-                  if (ready && _showControls)
-                    Positioned(
-                      left: AppSpacing.base,
-                      right: AppSpacing.base,
-                      bottom: MediaQuery.of(context).padding.bottom + 112,
-                      child: AnimatedSwitcher(
-                        duration: _similarCloseDuration,
-                        child: _similarOpen
-                            ? SimilarItemsBar(
-                                key: const ValueKey('similar-open'),
-                                items: nativeController.similarResults,
-                                bytesFor: (item) => nativeController.similarThumbCache[nativeController.cacheKeyForResult(item)],
-                                loading: nativeController.isLoadingSimilar,
-                                label: 'Similar to this frame',
-                                onTapItem: (item, bytes) => _openSimilarItem(item, bytes),
-                                onSearchFull: () => _confirmFrameSearch(nativeController),
-                              )
-                            : const SizedBox.shrink(key: ValueKey('similar-closed')),
-                      ),
-                    ),
-
-                  // Their face, flying from the panel to their head while the video jumps there.
-                  if (_flight != null)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: AnimatedBuilder(
-                          animation: _flightCtrl,
-                          builder: (context, _) => FaceFlightOverlay(flight: _flight!, t: _flightCtrl.value),
+                    // The quiet "looking" glow and what it is doing.
+                    if (ready)
+                      Positioned.fill(
+                        child: PhotoScanGlow(
+                          visible: _scanningVideo || _looking,
+                          // The whole-video scan is the bigger thing: it speaks first.
+                          message: _scanningVideo
+                              ? _videoMessage
+                              : _scanMessage,
+                          bottomInset: 96,
                         ),
                       ),
-                    ),
 
-                  // Messages: above the controls when they are showing, low on the screen when not.
-                  Positioned(
-                    left: AppSpacing.base,
-                    right: AppSpacing.base,
-                    bottom: MediaQuery.of(context).padding.bottom + (_showControls ? (_peopleOpen ? 268 : 178) : AppSpacing.xxl),
-                    child: IgnorePointer(
-                      child: Center(
+                    // The people in this video (from the button): above the picture's outlines, so its taps
+                    // are never taken by a head underneath.
+                    if (ready &&
+                        _people.isNotEmpty &&
+                        _peopleOpen &&
+                        _showControls)
+                      Positioned(
+                        left: AppSpacing.base,
+                        right: AppSpacing.base,
+                        bottom: MediaQuery.of(context).padding.bottom + 112,
+                        child: VideoPeoplePanel(
+                          people: _people,
+                          focusedId: _focusPerson,
+                          onTap: _jumpToPerson,
+                        ),
+                      ),
+
+                    // "Similar to this frame": shown once a frame has been picked, above the
+                    // controls bar the same way the people panel is. AnimatedSwitcher rather than
+                    // gating the whole Positioned on _similarOpen: closing (by hand, or
+                    // automatically before _openSimilarItem navigates away) fades it out instead
+                    // of cutting it off dead.
+                    if (ready && _showControls)
+                      Positioned(
+                        left: AppSpacing.base,
+                        right: AppSpacing.base,
+                        bottom: MediaQuery.of(context).padding.bottom + 112,
                         child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 320),
-                          switchInCurve: Curves.easeOutCubic,
-                          switchOutCurve: Curves.easeIn,
-                          transitionBuilder: (child, animation) => FadeTransition(
-                            opacity: animation,
-                            child: SlideTransition(
-                              position: Tween(begin: const Offset(0, 0.25), end: Offset.zero).animate(animation),
-                              child: ScaleTransition(scale: Tween(begin: 0.96, end: 1.0).animate(animation), child: child),
+                          duration: _similarCloseDuration,
+                          child: _similarOpen
+                              ? SimilarItemsBar(
+                                  key: const ValueKey('similar-open'),
+                                  items: nativeController.similarResults,
+                                  bytesFor: (item) =>
+                                      nativeController
+                                          .similarThumbCache[nativeController
+                                          .cacheKeyForResult(item)],
+                                  loading: nativeController.isLoadingSimilar,
+                                  label: 'Similar to this frame',
+                                  onTapItem: (item, bytes) =>
+                                      _openSimilarItem(item, bytes),
+                                  onSearchFull: () =>
+                                      _confirmFrameSearch(nativeController),
+                                )
+                              : const SizedBox.shrink(
+                                  key: ValueKey('similar-closed'),
+                                ),
+                        ),
+                      ),
+
+                    // Their face, flying from the panel to their head while the video jumps there.
+                    if (_flight != null)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: AnimatedBuilder(
+                            animation: _flightCtrl,
+                            builder: (context, _) => FaceFlightOverlay(
+                              flight: _flight!,
+                              t: _flightCtrl.value,
                             ),
                           ),
-                          child: _toast == null
-                              ? const SizedBox.shrink(key: ValueKey('no-toast'))
-                              : _ToastCard(key: ValueKey(_toast), data: _toast!),
+                        ),
+                      ),
+
+                    // Messages: above the controls when they are showing, low on the screen when not.
+                    Positioned(
+                      left: AppSpacing.base,
+                      right: AppSpacing.base,
+                      bottom:
+                          MediaQuery.of(context).padding.bottom +
+                          (_showControls
+                              ? (_peopleOpen ? 268 : 178)
+                              : AppSpacing.xxl),
+                      child: IgnorePointer(
+                        child: Center(
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 320),
+                            switchInCurve: Curves.easeOutCubic,
+                            switchOutCurve: Curves.easeIn,
+                            transitionBuilder: (child, animation) =>
+                                FadeTransition(
+                                  opacity: animation,
+                                  child: SlideTransition(
+                                    position: Tween(
+                                      begin: const Offset(0, 0.25),
+                                      end: Offset.zero,
+                                    ).animate(animation),
+                                    child: ScaleTransition(
+                                      scale: Tween(
+                                        begin: 0.96,
+                                        end: 1.0,
+                                      ).animate(animation),
+                                      child: child,
+                                    ),
+                                  ),
+                                ),
+                            child: _toast == null
+                                ? const SizedBox.shrink(
+                                    key: ValueKey('no-toast'),
+                                  )
+                                : _ToastCard(
+                                    key: ValueKey(_toast),
+                                    data: _toast!,
+                                  ),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
 
-            DraggableMetadataSheet(
-              visible: nativeController.showMetadata,
-              onDismissed: nativeController.hideMetadata,
-              heightFactor: 0.5,
-              child: _VideoMetadataContent(
-                metadata: nativeController.selectedMetadata,
-                isLoading: nativeController.isFetchingMetadata,
-                matchExplanation: nativeController.matchExplanation,
-                matchedFrameBytes: widget.thumbnailBytes,
-                matchedTimestampMs: widget.timestampMs,
+              DraggableMetadataSheet(
+                visible: nativeController.showMetadata,
+                onDismissed: nativeController.hideMetadata,
+                heightFactor: 0.5,
+                child: _VideoMetadataContent(
+                  metadata: nativeController.selectedMetadata,
+                  isLoading: nativeController.isFetchingMetadata,
+                  matchExplanation: nativeController.matchExplanation,
+                  matchedFrameBytes: widget.thumbnailBytes,
+                  matchedTimestampMs: widget.timestampMs,
+                ),
               ),
-            ),
-          ],
-        ),
+            ],
+          ),
         ),
       ),
     );
@@ -1122,7 +1306,10 @@ class _FramePickHint extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(top: AppSpacing.sm),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.sm),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.base,
+          vertical: AppSpacing.sm,
+        ),
         decoration: BoxDecoration(
           color: Colors.black.withValues(alpha: 0.6),
           borderRadius: BorderRadius.circular(AppRadius.pill),
@@ -1134,7 +1321,11 @@ class _FramePickHint extends StatelessWidget {
             SizedBox(width: AppSpacing.sm),
             Text(
               'Drag the bar to any moment, then see what looks similar',
-              style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ],
         ),
@@ -1172,7 +1363,8 @@ class _FramePickBarState extends State<_FramePickBar> {
 
   void _seek(double v, {bool force = false}) {
     final now = DateTime.now();
-    if (!force && now.difference(_lastSeek) < const Duration(milliseconds: 90)) return;
+    if (!force && now.difference(_lastSeek) < const Duration(milliseconds: 90))
+      return;
     _lastSeek = now;
     widget.controller.seekTo(Duration(milliseconds: v.round()));
   }
@@ -1184,10 +1376,18 @@ class _FramePickBarState extends State<_FramePickBar> {
     final onCancel = widget.onCancel;
     final onSearch = widget.onSearch;
     final durationMs = controller.value.duration.inMilliseconds;
-    final positionMs = controller.value.position.inMilliseconds.clamp(0, durationMs > 0 ? durationMs : 1);
+    final positionMs = controller.value.position.inMilliseconds.clamp(
+      0,
+      durationMs > 0 ? durationMs : 1,
+    );
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(AppSpacing.base, 0, AppSpacing.base, AppSpacing.xxl),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.base,
+        0,
+        AppSpacing.base,
+        AppSpacing.xxl,
+      ),
       child: Column(
         children: [
           SliderTheme(
@@ -1212,7 +1412,10 @@ class _FramePickBarState extends State<_FramePickBar> {
             children: [
               TextButton(
                 onPressed: onCancel,
-                child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+                child: const Text(
+                  'Cancel',
+                  style: TextStyle(color: Colors.white70),
+                ),
               ),
               const Spacer(),
               Text(
@@ -1235,7 +1438,11 @@ class _FramePickBarState extends State<_FramePickBar> {
                   child: const Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.image_search_rounded, color: AppColors.onPrimary, size: 18),
+                      Icon(
+                        Icons.image_search_rounded,
+                        color: AppColors.onPrimary,
+                        size: 18,
+                      ),
                       SizedBox(width: AppSpacing.sm),
                       Text(
                         'Show similar',
@@ -1282,7 +1489,9 @@ class _VideoMetadataContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (isLoading) {
-      return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return const Center(
+        child: CircularProgressIndicator(color: AppColors.primary),
+      );
     }
 
     return SingleChildScrollView(
@@ -1310,12 +1519,16 @@ class _VideoMetadataContent extends StatelessWidget {
               InfoRow(
                 icon: Icons.videocam_outlined,
                 label: 'File name',
-                value: metadata.fileName.isNotEmpty ? metadata.fileName : 'Unknown',
+                value: metadata.fileName.isNotEmpty
+                    ? metadata.fileName
+                    : 'Unknown',
               ),
               InfoRow(
                 icon: Icons.folder_outlined,
                 label: 'File path',
-                value: metadata.imagePath.isNotEmpty ? metadata.imagePath : 'Unknown',
+                value: metadata.imagePath.isNotEmpty
+                    ? metadata.imagePath
+                    : 'Unknown',
               ),
               if (metadata.durationMs > 0)
                 InfoRow(
@@ -1369,9 +1582,10 @@ class _MatchedFrameRow extends StatelessWidget {
         Expanded(
           child: Text(
             label,
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: AppColors.ink48, fontWeight: FontWeight.w600),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: AppColors.ink48,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ),
       ],
@@ -1407,7 +1621,12 @@ class _ToastCard extends StatelessWidget {
 
     return Container(
       constraints: const BoxConstraints(maxWidth: 400),
-      padding: EdgeInsets.fromLTRB(faces.isEmpty ? AppSpacing.base : AppSpacing.md, AppSpacing.md, AppSpacing.base, AppSpacing.md),
+      padding: EdgeInsets.fromLTRB(
+        faces.isEmpty ? AppSpacing.base : AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.base,
+        AppSpacing.md,
+      ),
       decoration: BoxDecoration(
         color: surface,
         borderRadius: BorderRadius.circular(AppRadius.xl),
@@ -1427,7 +1646,10 @@ class _ToastCard extends StatelessWidget {
                       left: i * (_face - _overlap),
                       child: Container(
                         padding: const EdgeInsets.all(2),
-                        decoration: const BoxDecoration(color: surface, shape: BoxShape.circle),
+                        decoration: const BoxDecoration(
+                          color: surface,
+                          shape: BoxShape.circle,
+                        ),
                         child: FaceAvatar(faceId: faces[i], size: _face),
                       ),
                     ),
@@ -1443,13 +1665,19 @@ class _ToastCard extends StatelessWidget {
               children: [
                 Text(
                   data.title,
-                  style: textTheme.titleSmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
+                  style: textTheme.titleSmall?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
                 if (data.subtitle != null) ...[
                   const SizedBox(height: 2),
                   Text(
                     data.subtitle!,
-                    style: textTheme.bodySmall?.copyWith(color: Colors.white.withValues(alpha: 0.66), height: 1.35),
+                    style: textTheme.bodySmall?.copyWith(
+                      color: Colors.white.withValues(alpha: 0.66),
+                      height: 1.35,
+                    ),
                   ),
                 ],
               ],
@@ -1489,14 +1717,24 @@ class _VideoControlsBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final value = controller.value;
     final label = Theme.of(context).textTheme.labelSmall?.copyWith(
-          color: Colors.white.withValues(alpha: 0.72),
-          fontFeatures: const [FontFeature.tabularFigures()],
-        );
+      color: Colors.white.withValues(alpha: 0.72),
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(AppSpacing.base, 0, AppSpacing.base, AppSpacing.xxl),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.base,
+        0,
+        AppSpacing.base,
+        AppSpacing.xxl,
+      ),
       child: Container(
-        padding: const EdgeInsets.fromLTRB(AppSpacing.xs + 2, AppSpacing.xs + 2, AppSpacing.md, AppSpacing.xs + 2),
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.xs + 2,
+          AppSpacing.xs + 2,
+          AppSpacing.md,
+          AppSpacing.xs + 2,
+        ),
         decoration: BoxDecoration(
           color: const Color(0xCC121413),
           borderRadius: BorderRadius.circular(AppRadius.xl),
@@ -1505,7 +1743,9 @@ class _VideoControlsBar extends StatelessWidget {
         child: Row(
           children: [
             MediaChromeButton(
-              icon: value.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              icon: value.isPlaying
+                  ? Icons.pause_rounded
+                  : Icons.play_arrow_rounded,
               tooltip: value.isPlaying ? 'Pause' : 'Play',
               onTap: onPlayPause,
             ),
@@ -1530,7 +1770,12 @@ class _VideoControlsBar extends StatelessWidget {
             ),
             if (peopleCount > 0) ...[
               const SizedBox(width: AppSpacing.md),
-              PeopleChipButton(count: peopleCount, pulse: peoplePulse, open: peopleOpen, onTap: onPeople),
+              PeopleChipButton(
+                count: peopleCount,
+                pulse: peoplePulse,
+                open: peopleOpen,
+                onTap: onPeople,
+              ),
             ],
           ],
         ),
@@ -1563,7 +1808,8 @@ class _VideoScrubberState extends State<_VideoScrubber> {
   void _seek(double fraction, {bool force = false}) {
     // Seeking on every drag event floods the player; one every ~70 ms is plenty, and the last one always lands.
     final now = DateTime.now();
-    if (!force && now.difference(_lastSeek) < const Duration(milliseconds: 70)) return;
+    if (!force && now.difference(_lastSeek) < const Duration(milliseconds: 70))
+      return;
     _lastSeek = now;
     final ms = widget.controller.value.duration.inMilliseconds;
     widget.controller.seekTo(Duration(milliseconds: (fraction * ms).round()));
@@ -1574,14 +1820,17 @@ class _VideoScrubberState extends State<_VideoScrubber> {
     final value = widget.controller.value;
     final durationMs = value.duration.inMilliseconds;
     final positionMs = value.position.inMilliseconds;
-    final playedFraction = durationMs > 0 ? (positionMs / durationMs).clamp(0.0, 1.0) : 0.0;
+    final playedFraction = durationMs > 0
+        ? (positionMs / durationMs).clamp(0.0, 1.0)
+        : 0.0;
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTapUp: (d) => _seek(_fractionAt(d.localPosition.dx, width), force: true),
+          onTapUp: (d) =>
+              _seek(_fractionAt(d.localPosition.dx, width), force: true),
           onHorizontalDragStart: (d) {
             _wasPlaying = widget.controller.value.isPlaying;
             widget.controller.pause();
@@ -1592,7 +1841,9 @@ class _VideoScrubberState extends State<_VideoScrubber> {
             _seek(_dragFraction, force: true);
           },
           onHorizontalDragUpdate: (d) {
-            setState(() => _dragFraction = _fractionAt(d.localPosition.dx, width));
+            setState(
+              () => _dragFraction = _fractionAt(d.localPosition.dx, width),
+            );
             _seek(_dragFraction);
           },
           onHorizontalDragEnd: (_) {
@@ -1623,7 +1874,12 @@ class _VideoScrubberState extends State<_VideoScrubber> {
 }
 
 class _ScrubberPainter extends CustomPainter {
-  _ScrubberPainter({required this.fraction, required this.grow, required this.markers, required this.durationMs});
+  _ScrubberPainter({
+    required this.fraction,
+    required this.grow,
+    required this.markers,
+    required this.durationMs,
+  });
 
   final double fraction; // 0..1
   final double grow; // 0..1 while held
@@ -1641,11 +1897,23 @@ class _ScrubberPainter extends CustomPainter {
 
     final radius = Radius.circular(trackHeight / 2);
     canvas.drawRRect(
-      RRect.fromLTRBR(left, y - trackHeight / 2, right, y + trackHeight / 2, radius),
+      RRect.fromLTRBR(
+        left,
+        y - trackHeight / 2,
+        right,
+        y + trackHeight / 2,
+        radius,
+      ),
       Paint()..color = Colors.white.withValues(alpha: 0.24),
     );
     canvas.drawRRect(
-      RRect.fromLTRBR(left, y - trackHeight / 2, x, y + trackHeight / 2, radius),
+      RRect.fromLTRBR(
+        left,
+        y - trackHeight / 2,
+        x,
+        y + trackHeight / 2,
+        radius,
+      ),
       Paint()..color = Colors.white,
     );
 
@@ -1653,18 +1921,33 @@ class _ScrubberPainter extends CustomPainter {
     if (durationMs > 0) {
       for (final t in markers) {
         final mx = left + span * (t / durationMs).clamp(0.0, 1.0);
-        canvas.drawCircle(Offset(mx, y), 4.4, Paint()..color = const Color(0xFF121413));
-        canvas.drawCircle(Offset(mx, y), 3.0, Paint()..color = const Color(0xFF5FE0CF));
+        canvas.drawCircle(
+          Offset(mx, y),
+          4.4,
+          Paint()..color = const Color(0xFF121413),
+        );
+        canvas.drawCircle(
+          Offset(mx, y),
+          3.0,
+          Paint()..color = const Color(0xFF5FE0CF),
+        );
       }
     }
 
     // The thumb.
     final thumb = 6.0 + 3.0 * grow;
-    canvas.drawCircle(Offset(x, y), thumb + 1.2, Paint()..color = Colors.black.withValues(alpha: 0.32));
+    canvas.drawCircle(
+      Offset(x, y),
+      thumb + 1.2,
+      Paint()..color = Colors.black.withValues(alpha: 0.32),
+    );
     canvas.drawCircle(Offset(x, y), thumb, Paint()..color = Colors.white);
   }
 
   @override
   bool shouldRepaint(covariant _ScrubberPainter old) =>
-      old.fraction != fraction || old.grow != grow || old.durationMs != durationMs || !identical(old.markers, markers);
+      old.fraction != fraction ||
+      old.grow != grow ||
+      old.durationMs != durationMs ||
+      !identical(old.markers, markers);
 }

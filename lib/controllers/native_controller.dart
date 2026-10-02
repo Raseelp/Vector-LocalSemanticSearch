@@ -15,6 +15,7 @@ import 'package:twentyonevision/models/meta_data_model.dart';
 import 'package:twentyonevision/models/model_status.dart';
 import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/query_words.dart';
+import 'package:twentyonevision/view/widget/mention_text_controller.dart';
 
 class NativeController extends GetxController with WidgetsBindingObserver {
   // Keys for the preferences persisted below - see
@@ -77,7 +78,7 @@ class NativeController extends GetxController with WidgetsBindingObserver {
       if (layoutName != null) {
         resultsLayout = ResultsLayout.values.firstWhere(
           (l) => l.name == layoutName,
-          orElse: () => ResultsLayout.grid2,
+          orElse: () => ResultsLayout.bento,
         );
       }
 
@@ -85,6 +86,7 @@ class NativeController extends GetxController with WidgetsBindingObserver {
       if (limit != null) {
         sliderValue = limit.clamp(10, 100).toDouble();
       }
+
 
       final failedRaw = prefs.getString(_failedByFolderKey);
       if (failedRaw != null) {
@@ -202,6 +204,7 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     update();
     await _persistFailedByFolder();
   }
+
   // Whether the OS will show our scan-progress notification (see
   // ScanForegroundService natively). Never requested automatically - we
   // already ask for storage/media access right before a scan, and asking
@@ -214,7 +217,14 @@ class NativeController extends GetxController with WidgetsBindingObserver {
   bool showMetadata = false;
   String error = '';
   String scannedPath = '';
-  TextEditingController searchTextController = TextEditingController();
+  // Recognises one named person typed plainly, or picked via "@", inside the query itself -
+  // see MentionTextEditingController's own doc for how runSearch() below uses it.
+  final MentionTextEditingController searchTextController =
+      MentionTextEditingController(
+        peopleProvider: () => Get.isRegistered<FacesController>()
+            ? Get.find<FacesController>().people
+            : const [],
+      );
   // The search box's focus, held here so the navigation bar's Search button
   // can put the cursor in it.
   final FocusNode searchFocusNode = FocusNode();
@@ -240,7 +250,26 @@ class NativeController extends GetxController with WidgetsBindingObserver {
   // results were found - null after an image-based search, since there's
   // no text to explain a match by. Set in runSearch, read by
   // loadMatchExplanation when a result gets opened.
+  //
+  // Deliberately the mention-stripped phrase, not the raw box text - a
+  // name isn't something CLIP has any concept of, so it's not what "why
+  // this matched" should explain. lastMentionedPersonIds/Names below are
+  // the other half of the same search, snapshotted separately rather than
+  // re-read live off searchTextController later (which may have since been
+  // edited for the *next* search by the time something asks).
   String? lastTextQuery;
+  List<int> lastMentionedPersonIds = [];
+  List<String> lastMentionedPeopleNames = [];
+
+  /// The last search's free text with any mentioned names put back in front
+  /// of it - what a "save as collection" name/query field should show,
+  /// since [lastTextQuery] alone silently drops them.
+  String get lastQueryWithMentions {
+    final text = lastTextQuery ?? '';
+    if (lastMentionedPeopleNames.isEmpty) return text;
+    final names = lastMentionedPeopleNames.join(' and ');
+    return text.isEmpty ? names : '$names $text';
+  }
 
   // Set when the results on screen came from an image search (a picked photo,
   // "search with this image", or a video frame) - what "Save as collection"
@@ -320,7 +349,8 @@ class NativeController extends GetxController with WidgetsBindingObserver {
   Duration? get downloadEta {
     final rate = downloadBytesPerSecond;
     final progress = downloadProgress;
-    if (rate == null || rate <= 0 || progress.overallTotalBytes == 0) return null;
+    if (rate == null || rate <= 0 || progress.overallTotalBytes == 0)
+      return null;
     final left = progress.overallTotalBytes - progress.overallBytesDownloaded;
     if (left <= 0) return null;
     return Duration(seconds: (left / rate).round());
@@ -344,20 +374,26 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     _speedBytes = progress.overallBytesDownloaded;
   }
 
-  List<ModelStatus> get _searchModels => modelStatuses.where((m) => m.group == 'search').toList();
-  List<ModelStatus> get _faceModels => modelStatuses.where((m) => m.group == 'faces').toList();
+  List<ModelStatus> get _searchModels =>
+      modelStatuses.where((m) => m.group == 'search').toList();
+  List<ModelStatus> get _faceModels =>
+      modelStatuses.where((m) => m.group == 'faces').toList();
 
   /// Size of the search (CLIP) models together.
-  int get searchModelBytes => _searchModels.fold<int>(0, (sum, m) => sum + m.sizeBytes);
+  int get searchModelBytes =>
+      _searchModels.fold<int>(0, (sum, m) => sum + m.sizeBytes);
 
   /// Size of the face recognition model.
-  int get faceModelBytes => _faceModels.fold<int>(0, (sum, m) => sum + m.sizeBytes);
+  int get faceModelBytes =>
+      _faceModels.fold<int>(0, (sum, m) => sum + m.sizeBytes);
 
   /// True once the search models are downloaded and verified.
-  bool get searchModelsVerified => _searchModels.isNotEmpty && _searchModels.every((m) => m.verified);
+  bool get searchModelsVerified =>
+      _searchModels.isNotEmpty && _searchModels.every((m) => m.verified);
 
   /// True if the face recognition model was downloaded (not merely found on the device).
-  bool get faceModelVerified => _faceModels.isNotEmpty && _faceModels.every((m) => m.verified);
+  bool get faceModelVerified =>
+      _faceModels.isNotEmpty && _faceModels.every((m) => m.verified);
 
   /// What the setup screen's button would download right now (whatever isn't there yet).
   int get pendingDownloadBytes {
@@ -440,7 +476,6 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-
   Future<void> cancelModelDownload() async {
     await NativeServices().cancelModelDownload();
   }
@@ -485,7 +520,10 @@ class NativeController extends GetxController with WidgetsBindingObserver {
   // up again the moment the image chip is removed), and the previous
   // result's match explanation goes too since it described a different
   // search.
-  Future<void> searchWithImage({required String uri, required Uint8List bytes}) {
+  Future<void> searchWithImage({
+    required String uri,
+    required Uint8List bytes,
+  }) {
     homeTab = 0;
     pickedSearchImageUri = uri;
     pickedSearchImageBytes = bytes;
@@ -500,7 +538,10 @@ class NativeController extends GetxController with WidgetsBindingObserver {
   // so the picked uri is the video's and the timestamp says which frame
   // (see runSearch). The preview bytes are that same frame, fetched here
   // since the search bar's chip needs something to show.
-  Future<void> searchWithVideoFrame({required String uri, required int timestampMs}) async {
+  Future<void> searchWithVideoFrame({
+    required String uri,
+    required int timestampMs,
+  }) async {
     homeTab = 0;
     pickedSearchImageUri = uri;
     pickedSearchVideoTimestampMs = timestampMs;
@@ -556,10 +597,18 @@ class NativeController extends GetxController with WidgetsBindingObserver {
               limit: 13,
               contentMode: ContentMode.both,
             )
-          : await NativeServices().searchByImage(uri: uri, limit: 13, contentMode: ContentMode.both);
-      if (token != _similarToken) return; // superseded while the search was in flight
+          : await NativeServices().searchByImage(
+              uri: uri,
+              limit: 13,
+              contentMode: ContentMode.both,
+            );
+      if (token != _similarToken)
+        return; // superseded while the search was in flight
 
-      similarResults = raw.where((item) => (item['path'] as String?) != uri).take(10).toList();
+      similarResults = raw
+          .where((item) => (item['path'] as String?) != uri)
+          .take(10)
+          .toList();
       update();
 
       // Small and fast (grid-sized thumbnails, not full images) - loaded a
@@ -629,8 +678,8 @@ class NativeController extends GetxController with WidgetsBindingObserver {
   // search bar), never both at once.
   Future<void> runSearch() async {
     final imageUri = pickedSearchImageUri;
-    final query = searchTextController.text.trim();
-    if (imageUri == null && query.isEmpty) return;
+    final rawQuery = searchTextController.text.trim();
+    if (imageUri == null && rawQuery.isEmpty) return;
 
     try {
       isSearching = true;
@@ -643,6 +692,8 @@ class NativeController extends GetxController with WidgetsBindingObserver {
         // No text behind an image-based search, so there's nothing to
         // explain a match by - see loadMatchExplanation's doc.
         lastTextQuery = null;
+        lastMentionedPersonIds = [];
+        lastMentionedPeopleNames = [];
         final frameMs = pickedSearchVideoTimestampMs;
         lastImageSeedUri = imageUri;
         lastImageSeedTimestampMs = frameMs;
@@ -659,13 +710,28 @@ class NativeController extends GetxController with WidgetsBindingObserver {
                 contentMode: searchContentMode,
               );
       } else {
+        // Recognised people (typed plainly, or picked via "@" - "Person and Person2 at the
+        // beach") narrow the search to photos/videos with all of them in it; their names are
+        // dropped from what's sent to CLIP, since a name isn't something an image-similarity
+        // model has any concept of - only the words describing what to find in those photos are.
+        final mentionedPeople = <int, Person>{
+          for (final p in searchTextController.recognizedPeople) p.id: p,
+        }.values.toList();
+        final mentionedIds = mentionedPeople.map((p) => p.id).toList();
+        final query = searchTextController.queryWithoutMention;
         lastTextQuery = query;
+        lastMentionedPersonIds = mentionedIds;
+        // A Person can only ever be recognised/mentioned in the first place
+        // if it has a name (see peopleProvider's own filter in
+        // MentionTextEditingController) - never null here.
+        lastMentionedPeopleNames = mentionedPeople.map((p) => p.name!).toList();
         lastImageSeedUri = null;
         lastImageSeedTimestampMs = null;
         searchResults = await NativeServices().searchImages(
           query: query,
           limitNumber: sliderValue.round().toInt(),
           contentMode: searchContentMode,
+          personIds: mentionedIds,
         );
       }
 
@@ -747,7 +813,10 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     _fetchRecentThumbnail(item, key);
   }
 
-  Future<void> _fetchRecentThumbnail(RecentEmbeddedItem item, String key) async {
+  Future<void> _fetchRecentThumbnail(
+    RecentEmbeddedItem item,
+    String key,
+  ) async {
     try {
       final bytes = item.isVideo
           ? await NativeServices().loadVideoThumbnail(
@@ -765,7 +834,9 @@ class NativeController extends GetxController with WidgetsBindingObserver {
         final removed = recentThumbnails.removeLast();
         // Only drop the cached bytes if nothing else in the strip still
         // needs them (same file could reappear if it hashes the same key).
-        if (!recentThumbnails.any((e) => _recentThumbKey(e) == _recentThumbKey(removed))) {
+        if (!recentThumbnails.any(
+          (e) => _recentThumbKey(e) == _recentThumbKey(removed),
+        )) {
           recentThumbBytes.remove(_recentThumbKey(removed));
         }
       }
@@ -959,13 +1030,17 @@ class NativeController extends GetxController with WidgetsBindingObserver {
         // Only a scan that actually reached the end counts - a cancelled
         // one reports done too, with processed short of total, and an
         // errored one reports total 0.
-        final completed = scanResult.total > 0 && scanResult.processed >= scanResult.total;
+        final completed =
+            scanResult.total > 0 && scanResult.processed >= scanResult.total;
         // New photos are in the index now - the face scan picks them up.
         if (Get.isRegistered<FacesController>()) {
           unawaited(Get.find<FacesController>().startScan());
         }
         if (completed) {
-          scanSummary = ScanSummary(total: scanResult.total, failed: scanResult.failed);
+          scanSummary = ScanSummary(
+            total: scanResult.total,
+            failed: scanResult.failed,
+          );
           unawaited(_recordFailedForFolder(scanResult.id, scanResult.failed));
         }
         if (scanResult.id.isNotEmpty) {
@@ -1028,7 +1103,9 @@ class NativeController extends GetxController with WidgetsBindingObserver {
       final raw = prefs.getString(_interruptedScanKey);
       if (raw == null) return;
       final decoded = jsonDecode(raw) as Map;
-      interruptedScan = decoded.map((k, v) => MapEntry(k as String, v as String));
+      interruptedScan = decoded.map(
+        (k, v) => MapEntry(k as String, v as String),
+      );
       update();
     } catch (e) {
       debugPrint('Failed to read interrupted-scan marker: $e');
@@ -1106,13 +1183,19 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     );
   }
 
-  Future<void> loadMetaDataByUri({required String uri, bool isVideo = false}) async {
+  Future<void> loadMetaDataByUri({
+    required String uri,
+    bool isVideo = false,
+  }) async {
     // Reset so the sheet doesn't open with the previous photo's metadata.
     showMetadata = false;
     selectedMetadata = ImageMetadata.empty();
     isFetchingMetadata = true;
     update();
-    final data = await NativeServices().loadMetadataByUri(uri: uri, isVideo: isVideo);
+    final data = await NativeServices().loadMetadataByUri(
+      uri: uri,
+      isVideo: isVideo,
+    );
     if (data != null) {
       selectedMetadata = data;
     }
@@ -1176,15 +1259,16 @@ class NativeController extends GetxController with WidgetsBindingObserver {
       words: words,
     );
 
-    final entries = raw
-        .map(
-          (m) => MapEntry(
-            m['word'] as String,
-            (m['score'] as num?)?.toDouble() ?? 0.0,
-          ),
-        )
-        .toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
+    final entries =
+        raw
+            .map(
+              (m) => MapEntry(
+                m['word'] as String,
+                (m['score'] as num?)?.toDouble() ?? 0.0,
+              ),
+            )
+            .toList()
+          ..sort((a, b) => b.value.compareTo(a.value));
 
     matchExplanation = entries.take(3).toList();
     update();
@@ -1416,7 +1500,7 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     unawaited(_persistString(_searchContentModeKey, contentMode.name));
   }
 
-  ResultsLayout resultsLayout = ResultsLayout.grid2;
+  ResultsLayout resultsLayout = ResultsLayout.bento;
 
   void setResultsLayout(ResultsLayout layout) {
     resultsLayout = layout;
@@ -1459,4 +1543,4 @@ enum PickingMode { device, folder }
 
 enum ContentMode { both, videos, images }
 
-enum ResultsLayout { list, grid2, grid3, grid4 }
+enum ResultsLayout { list, grid2, grid3, grid4, bento }

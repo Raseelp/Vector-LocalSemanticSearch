@@ -12,7 +12,7 @@ class IndexedFolderDbHelper {
   static const _dbName = 'twentyonevision.db';
   // onUpgrade just drops and recreates this table - it's disposable UI
   // bookkeeping, the actual embeddings live in the native store untouched.
-  static const _dbVersion = 4;
+  static const _dbVersion = 5;
 
   // User-created collections, plus a bare row (hidden = 1) for a built-in
   // the user has hidden - built-ins themselves live in code, see
@@ -79,7 +79,8 @@ class IndexedFolderDbHelper {
         hidden INTEGER,
         createdAt INTEGER,
         kind TEXT,
-        seed TEXT
+        seed TEXT,
+        personIds TEXT
       )
     ''');
   }
@@ -95,12 +96,21 @@ class IndexedFolderDbHelper {
       await _createFoldersTable(db);
     }
     if (oldVersion < 3) {
+      // Freshly created, so it already has every column below - the two
+      // branches underneath only apply to a table that already existed.
       await _createCollectionsTable(db);
-    } else if (oldVersion < 4) {
-      // Photo-seeded collections - additive, existing rows keep working (a
-      // null kind reads as 'text').
-      await db.execute("ALTER TABLE $collectionsTable ADD COLUMN kind TEXT");
-      await db.execute("ALTER TABLE $collectionsTable ADD COLUMN seed TEXT");
+    } else {
+      if (oldVersion < 4) {
+        // Photo-seeded collections - additive, existing rows keep working
+        // (a null kind reads as 'text').
+        await db.execute("ALTER TABLE $collectionsTable ADD COLUMN kind TEXT");
+        await db.execute("ALTER TABLE $collectionsTable ADD COLUMN seed TEXT");
+      }
+      if (oldVersion < 5) {
+        // Person-mention collections - additive, existing rows keep working
+        // (a null personIds reads as "no person filter").
+        await db.execute("ALTER TABLE $collectionsTable ADD COLUMN personIds TEXT");
+      }
     }
   }
 

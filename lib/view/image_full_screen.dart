@@ -8,6 +8,7 @@ import 'package:twentyonevision/models/meta_data_model.dart';
 import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
+import 'package:twentyonevision/utils/media_view_route.dart';
 import 'package:twentyonevision/view/person_screen.dart';
 import 'package:twentyonevision/view/video_full_screen.dart';
 import 'package:twentyonevision/view/widget/draggable_metadata_sheet.dart';
@@ -50,7 +51,8 @@ void _dropSearchFocus() {
   });
 }
 
-class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProviderStateMixin {
+class _ImageViewScreenState extends State<ImageViewScreen>
+    with SingleTickerProviderStateMixin {
   late Uint8List imageBytes = widget.imageBytes;
   String get uri => widget.uri;
 
@@ -68,25 +70,36 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
   final int _token = DateTime.now().microsecondsSinceEpoch;
 
   // ---- the People button: everyone recognised in this photo, in a panel ----
-  final GlobalKey<ZoomableImageState> _zoomKey = GlobalKey<ZoomableImageState>();
+  final GlobalKey<ZoomableImageState> _zoomKey =
+      GlobalKey<ZoomableImageState>();
   bool _peopleOpen = false;
 
   // ---- "Similar to this": the strip opened from the search-with-image button ----
   bool _similarOpen = false;
-  int _peoplePulse = 0; // bumped to make the button draw the eye (a scan just found people)
+  int _peoplePulse =
+      0; // bumped to make the button draw the eye (a scan just found people)
   bool _sawGlow = false; // the scan took long enough to show the glow
   int? _pointedPerson;
   int _pointId = 0;
   FaceFlight? _flight;
-  late final AnimationController _flightCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 700));
+  late final AnimationController _flightCtrl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 700),
+  );
 
   /// The distinct people in the photo, biggest face first.
   List<VideoPerson> get _people {
-    final sorted = [..._faces]..sort((a, b) => ((b.right - b.left) * (b.bottom - b.top)).compareTo((a.right - a.left) * (a.bottom - a.top)));
+    final sorted = [..._faces]
+      ..sort(
+        (a, b) => ((b.right - b.left) * (b.bottom - b.top)).compareTo(
+          (a.right - a.left) * (a.bottom - a.top),
+        ),
+      );
     final seen = <int>{};
     final out = <VideoPerson>[];
     for (final f in sorted) {
-      if (seen.add(f.person.id)) out.add(VideoPerson(person: f.person, times: const []));
+      if (seen.add(f.person.id))
+        out.add(VideoPerson(person: f.person, times: const []));
     }
     return out;
   }
@@ -113,17 +126,31 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
       return;
     }
     setState(() {
-      _flight = FaceFlight(faceId: vp.person.coverFaceId, from: from.center, to: head.center, endRadius: head.radius, entry: entry);
+      _flight = FaceFlight(
+        faceId: vp.person.coverFaceId,
+        from: from.center,
+        to: head.center,
+        endRadius: head.radius,
+        entry: entry,
+      );
     });
     _flightCtrl.value = 0;
     await _flightCtrl
-        .animateTo(FaceFlightOverlay.landingAt, duration: const Duration(milliseconds: 620), curve: Curves.linear)
+        .animateTo(
+          FaceFlightOverlay.landingAt,
+          duration: const Duration(milliseconds: 620),
+          curve: Curves.linear,
+        )
         .orCancel
         .then((_) {}, onError: (_) {});
     if (!mounted || id != _pointId) return;
     zoom.pointAt(face, entry);
     await _flightCtrl
-        .animateTo(1.0, duration: const Duration(milliseconds: 160), curve: Curves.easeOut)
+        .animateTo(
+          1.0,
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOut,
+        )
         .orCancel
         .then((_) {}, onError: (_) {});
     if (mounted && id == _pointId) setState(() => _flight = null);
@@ -159,7 +186,10 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
       _poll = Timer.periodic(const Duration(milliseconds: 250), (_) async {
         try {
           final status = await NativeServices().photoScanStatus(uri);
-          if (mounted && _looking && status != null && status.message != _scanMessage) {
+          if (mounted &&
+              _looking &&
+              status != null &&
+              status.message != _scanMessage) {
             setState(() => _scanMessage = status.message);
           }
         } catch (_) {}
@@ -207,19 +237,23 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
     void push() {
       if (isVideo) {
         Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => VideoViewScreen(videoUri: itemUri, timestampMs: timestampMs, thumbnailBytes: bytes),
+          mediaViewRoute(
+            (_) => VideoViewScreen(
+              videoUri: itemUri,
+              timestampMs: timestampMs,
+              thumbnailBytes: bytes,
+            ),
           ),
         );
       } else {
-        // Plain Navigator, not Get.to: this can be opened from inside another ImageViewScreen
-        // (a similar photo, tapped from a photo's own viewer), and Get.to's default
-        // preventDuplicates treats pushing the same widget type as "already here" and quietly
-        // does nothing - only a problem for same-type navigation, which is exactly this case.
         Navigator.of(context).push(
-          MaterialPageRoute(
+          mediaViewRoute(
             // Only a small grid-sized thumbnail was loaded for the strip - the viewer loads the sharp photo itself.
-            builder: (_) => ImageViewScreen(imageBytes: bytes, uri: itemUri, loadFullRes: true),
+            (_) => ImageViewScreen(
+              imageBytes: bytes,
+              uri: itemUri,
+              loadFullRes: true,
+            ),
           ),
         );
       }
@@ -297,7 +331,12 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
                     ),
                   ),
 
-                  Positioned.fill(child: PhotoScanGlow(visible: _looking, message: _scanMessage)),
+                  Positioned.fill(
+                    child: PhotoScanGlow(
+                      visible: _looking,
+                      message: _scanMessage,
+                    ),
+                  ),
 
                   // The people in this photo (opens a panel above): out of the way while the details are up.
                   if (_faces.isNotEmpty && !controller.showMetadata) ...[
@@ -315,7 +354,8 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
                       ),
                     Positioned(
                       right: AppSpacing.base,
-                      bottom: MediaQuery.of(context).padding.bottom + AppSpacing.xl,
+                      bottom:
+                          MediaQuery.of(context).padding.bottom + AppSpacing.xl,
                       child: PeopleChipButton(
                         count: _people.length,
                         pulse: _peoplePulse,
@@ -345,19 +385,27 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
                           ? SimilarItemsBar(
                               key: const ValueKey('similar-open'),
                               items: controller.similarResults,
-                              bytesFor: (item) => controller.similarThumbCache[controller.cacheKeyForResult(item)],
+                              bytesFor: (item) =>
+                                  controller.similarThumbCache[controller
+                                      .cacheKeyForResult(item)],
                               loading: controller.isLoadingSimilar,
                               // Not "similar photos" - this can turn up videos too, same as the
                               // search this button falls back to.
                               label: 'Similar to this photo',
-                              onTapItem: (item, bytes) => _openSimilarItem(item, bytes),
+                              onTapItem: (item, bytes) =>
+                                  _openSimilarItem(item, bytes),
                               onSearchFull: () {
                                 setState(() => _similarOpen = false);
                                 Get.until((route) => route.isFirst);
-                                controller.searchWithImage(uri: uri, bytes: imageBytes);
+                                controller.searchWithImage(
+                                  uri: uri,
+                                  bytes: imageBytes,
+                                );
                               },
                             )
-                          : const SizedBox.shrink(key: ValueKey('similar-closed')),
+                          : const SizedBox.shrink(
+                              key: ValueKey('similar-closed'),
+                            ),
                     ),
                   ),
 
@@ -367,7 +415,10 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
                       child: IgnorePointer(
                         child: AnimatedBuilder(
                           animation: _flightCtrl,
-                          builder: (context, _) => FaceFlightOverlay(flight: _flight!, t: _flightCtrl.value),
+                          builder: (context, _) => FaceFlightOverlay(
+                            flight: _flight!,
+                            t: _flightCtrl.value,
+                          ),
                         ),
                       ),
                     ),
@@ -413,8 +464,12 @@ class _ImageViewScreenState extends State<ImageViewScreen> with SingleTickerProv
                     child: Row(
                       children: [
                         MediaChromeButton(
-                          icon: _similarOpen ? Icons.image_search : Icons.image_search_rounded,
-                          tooltip: _similarOpen ? 'Hide similar photos' : 'Similar to this photo',
+                          icon: _similarOpen
+                              ? Icons.image_search
+                              : Icons.image_search_rounded,
+                          tooltip: _similarOpen
+                              ? 'Hide similar photos'
+                              : 'Similar to this photo',
                           active: _similarOpen,
                           onTap: () => setState(() {
                             _similarOpen = !_similarOpen;

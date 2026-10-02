@@ -21,6 +21,7 @@ class SmartCollection {
     this.seedEmbedding,
     this.seedUri,
     this.seedTimestampMs,
+    this.personIds = const [],
   });
 
   static const String kindText = 'text';
@@ -61,6 +62,12 @@ class SmartCollection {
   final String? seedUri;
   final int? seedTimestampMs;
 
+  /// Recognised-person ids mentioned when this collection was made (e.g.
+  /// "@Raseel at the beach") - narrows membership to photos/videos with all
+  /// of them in it, same "together" rule the search box's own @-mention
+  /// uses. Empty for a collection with no person filter at all.
+  final List<int> personIds;
+
   bool get isPhotos => kind == kindPhotos;
 
   String get queryText => explainQuery ?? prompts.first;
@@ -77,6 +84,7 @@ class SmartCollection {
     // Only needed when [prompts] is given but the short phrase should stay
     // (restoring a built-in's own override).
     String? explainQuery,
+    List<int>? personIds,
   }) {
     return SmartCollection(
       id: id,
@@ -92,6 +100,7 @@ class SmartCollection {
       seedEmbedding: seedEmbedding,
       seedUri: seedUri,
       seedTimestampMs: seedTimestampMs,
+      personIds: personIds ?? this.personIds,
     );
   }
 
@@ -109,6 +118,7 @@ class SmartCollection {
     'seed': isPhotos
         ? jsonEncode({'embedding': seedEmbedding, 'uri': seedUri, 'timestampMs': seedTimestampMs})
         : null,
+    'personIds': personIds.isEmpty ? null : jsonEncode(personIds),
   };
 
   factory SmartCollection.fromRow(Map<String, Object?> row) {
@@ -130,6 +140,9 @@ class SmartCollection {
       sensitivity: (row['sensitivity'] as num?)?.toDouble() ?? defaultSensitivity,
       isBuiltIn: (row['isBuiltIn'] as int? ?? 0) == 1,
       createdAt: row['createdAt'] as int? ?? 0,
+      personIds: (row['personIds'] as String?) == null
+          ? const []
+          : (jsonDecode(row['personIds'] as String) as List).cast<num>().map((e) => e.toInt()).toList(),
     );
   }
 }

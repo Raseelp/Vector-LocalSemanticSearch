@@ -140,7 +140,11 @@ class CollectionsTab extends StatelessWidget {
       showQuery: true,
       // Stays on the tab: the new card appears at the top and plays its own
       // "finding matches" animation - opening it straight away would hide that.
-      onSave: (name, query) => controller.createCollection(name: name, query: query),
+      onSave: (name, query, personIds) => controller.createCollection(
+        name: name,
+        query: query,
+        personIds: personIds,
+      ),
     );
   }
 }

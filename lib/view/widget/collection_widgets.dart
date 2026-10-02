@@ -3,12 +3,16 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:get/get.dart';
 import 'package:twentyonevision/controllers/collections_controller.dart';
+import 'package:twentyonevision/controllers/faces_controller.dart';
 import 'package:twentyonevision/models/collection_model.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
 import 'package:twentyonevision/view/widget/confirm_dialog.dart';
+import 'package:twentyonevision/view/widget/mention_input_field.dart';
+import 'package:twentyonevision/view/widget/mention_text_controller.dart';
 
 String _countLabel(int count) => count == 1 ? '1 item' : '$count items';
 
@@ -352,14 +356,17 @@ class NewCollectionCard extends StatelessWidget {
 }
 
 /// Name (+ the phrase to search, when it isn't already known) for a new or
-/// edited collection. [onSave] gets the finished values.
+/// edited collection. [onSave] gets the finished values - [query] already
+/// has any "@name" mentions stripped out (same as search's own
+/// queryWithoutMention), with those names broken out separately into
+/// [onSave]'s third argument.
 Future<void> showSaveCollectionSheet(
   BuildContext context, {
   String? title,
   String initialName = '',
   String? initialQuery,
   bool showQuery = false,
-  required Future<void> Function(String name, String query) onSave,
+  required Future<void> Function(String name, String query, List<int> personIds) onSave,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -388,7 +395,7 @@ class _SaveCollectionSheet extends StatefulWidget {
   final String initialName;
   final String? initialQuery;
   final bool showQuery;
-  final Future<void> Function(String name, String query) onSave;
+  final Future<void> Function(String name, String query, List<int> personIds) onSave;
 
   @override
   State<_SaveCollectionSheet> createState() => _SaveCollectionSheetState();
@@ -398,9 +405,15 @@ class _SaveCollectionSheetState extends State<_SaveCollectionSheet> {
   late final TextEditingController _name = TextEditingController(
     text: widget.initialName,
   );
-  late final TextEditingController _query = TextEditingController(
-    text: widget.initialQuery ?? '',
-  );
+  // Same "@name" recognition the search box uses - lets a collection made
+  // from the Collections page (not just one saved from an existing search)
+  // filter by person too. peopleProvider mirrors NativeController's own
+  // construction of its searchTextController.
+  late final MentionTextEditingController _query = MentionTextEditingController(
+    peopleProvider: () =>
+        Get.isRegistered<FacesController>() ? Get.find<FacesController>().people : const [],
+  )..text = widget.initialQuery ?? '';
+
   @override
   void dispose() {
     _name.dispose();
@@ -415,18 +428,23 @@ class _SaveCollectionSheetState extends State<_SaveCollectionSheet> {
   // the list and plays its own "finding matches" animation, so there's
   // nothing to wait on here.
   void _save() {
-    final query = widget.showQuery ? _query.text.trim() : (widget.initialQuery ?? '');
+    final query = widget.showQuery ? _query.queryWithoutMention : (widget.initialQuery ?? '');
+    final personIds = widget.showQuery
+        ? _query.recognizedPeople.map((p) => p.id).toList()
+        : const <int>[];
     final name = _name.text.trim();
     final onSave = widget.onSave;
     Navigator.of(context).pop();
-    unawaited(onSave(name, query));
+    unawaited(onSave(name, query, personIds));
   }
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
 
-    return Padding(
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
       padding: EdgeInsets.only(
         bottom: MediaQuery.of(context).viewInsets.bottom,
       ),
@@ -445,7 +463,12 @@ class _SaveCollectionSheetState extends State<_SaveCollectionSheet> {
         ),
         child: SafeArea(
           top: false,
-          child: Column(
+          // A tall keyboard (or a long "@name and @name2..." query) can
+          // otherwise push this sheet's own content taller than the space
+          // actually left above it - scrollable rather than clipped/
+          // overflowing keeps the Save button reachable either way.
+          child: SingleChildScrollView(
+            child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -471,11 +494,24 @@ class _SaveCollectionSheetState extends State<_SaveCollectionSheet> {
               ],
               const SizedBox(height: AppSpacing.base),
               if (widget.showQuery) ...[
-                _Field(
-                  controller: _query,
-                  hint: 'What to look for, e.g. "dog"',
-                  autofocus: widget.initialQuery == null,
-                  onChanged: () => setState(() {}),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base),
+                  decoration: BoxDecoration(
+                    color: AppColors.parchment,
+                    borderRadius: BorderRadius.circular(AppRadius.lg),
+                  ),
+                  child: MentionInputField(
+                    controller: _query,
+                    autofocus: widget.initialQuery == null,
+                    onChanged: () => setState(() {}),
+                    style: textTheme.bodyMedium,
+                    decoration: InputDecoration(
+                      hintText: 'What to look for, e.g. "dog" or "@name at the beach"',
+                      hintStyle: const TextStyle(color: AppColors.ink48),
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
+                    ),
+                  ),
                 ),
                 const SizedBox(height: AppSpacing.sm),
               ],
@@ -515,6 +551,7 @@ class _SaveCollectionSheetState extends State<_SaveCollectionSheet> {
                 ),
               ),
             ],
+            ),
           ),
         ),
       ),
@@ -653,25 +690,42 @@ Future<void> showEditCollectionSheet(
       title: 'Rename collection',
       initialName: collection.name,
       initialQuery: 'photos that look like the one you saved',
-      onSave: (name, _) => controller.updateCollection(
+      onSave: (name, _, __) => controller.updateCollection(
         collection.copyWith(name: name.isEmpty ? collection.name : name),
       ),
     );
   }
 
   // Shows the short phrase (a built-in's several prompts are an
-  // implementation detail); leaving it alone keeps the built-in's own.
+  // implementation detail); leaving it alone keeps the built-in's own. Any
+  // already-mentioned people are put back in front of it, the same way
+  // search's own lastQueryWithMentions does - so the field's own name
+  // recognition picks them up again as soon as it opens, rather than
+  // silently starting from a collection that looks like it has no person
+  // filter at all.
   final currentQuery = collection.queryText;
+  final currentPersonNames = collection.personIds.isEmpty || !Get.isRegistered<FacesController>()
+      ? const <String>[]
+      : Get.find<FacesController>().people
+          .where((p) => collection.personIds.contains(p.id))
+          .map((p) => p.name)
+          .whereType<String>()
+          .toList();
+  final initialQueryWithMentions = currentPersonNames.isEmpty
+      ? currentQuery
+      : '${currentPersonNames.join(' and ')} $currentQuery';
+
   return showSaveCollectionSheet(
     context,
     title: 'Edit collection',
     initialName: collection.name,
-    initialQuery: currentQuery,
+    initialQuery: initialQueryWithMentions,
     showQuery: true,
-    onSave: (name, query) => controller.updateCollection(
+    onSave: (name, query, personIds) => controller.updateCollection(
       collection.copyWith(
         name: name.isEmpty ? query : name,
         prompts: query == currentQuery ? null : [query],
+        personIds: personIds,
       ),
     ),
   );

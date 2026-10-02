@@ -193,6 +193,20 @@ class _HomeScreenState extends State<HomeScreen> {
                               WidgetsBinding.instance.addPostFrameCallback((_) {
                                 controller.searchFocusNode.requestFocus();
                               });
+                            } else {
+                              // Leaving the search tab - the box can still hold
+                              // focus from an earlier visit (IndexedStack keeps
+                              // every tab's tree alive, and Flutter's focus
+                              // history is app-wide, not scoped to whichever
+                              // tab is actually showing). Left alone, that
+                              // stale focus can resurface later with no
+                              // relation to what's now open - popping back
+                              // from a pushed detail screen (a collection, a
+                              // person) that has no text field of its own
+                              // restores focus to whatever last held it,
+                              // which otherwise pops the keyboard back up
+                              // over a completely different tab.
+                              controller.searchFocusNode.unfocus();
                             }
                           },
                         ),
