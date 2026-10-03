@@ -6,7 +6,6 @@ import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
 import 'package:twentyonevision/view/hidden_people_screen.dart';
 import 'package:twentyonevision/view/merge_history_screen.dart';
-import 'package:twentyonevision/view/widget/confirm_dialog.dart';
 import 'package:twentyonevision/view/widget/face_widgets.dart';
 
 /// Options for the Faces tab: whether videos are scanned, and the maintenance actions.
@@ -73,7 +72,7 @@ class _OptionsBody extends StatelessWidget {
                     const SizedBox(height: AppSpacing.xs),
                     Text(
                       'How many frames of each video are checked. Applies to videos not scanned yet - '
-                      '"Scan all photos again" redoes the rest.',
+                      '"Clear face data" in Settings redoes the rest.',
                       style: textTheme.bodySmall?.copyWith(color: AppColors.ink48, fontSize: 11, height: 1.4),
                     ),
                   ],
@@ -98,23 +97,6 @@ class _OptionsBody extends StatelessWidget {
                 Navigator.of(context).pop();
                 Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HiddenPeopleScreen()));
               },
-            ),
-            const Divider(height: 1, color: AppColors.dividerSoft),
-            SheetRow(
-              icon: Icons.restart_alt_rounded,
-              label: 'Scan all photos again',
-              subtitle: 'Forgets every group and name, then starts over',
-              danger: true,
-              onTap: () => showConfirmDialog(
-                context,
-                title: 'Scan everything again?',
-                message: 'All groups and the names you gave will be removed, and every photo is searched for faces again.',
-                confirmLabel: 'Scan again',
-                onConfirm: () {
-                  Navigator.of(context).pop();
-                  faces.rescanEverything();
-                },
-              ),
             ),
           ],
         );

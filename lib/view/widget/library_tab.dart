@@ -3,9 +3,12 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:get/get.dart';
+import 'package:twentyonevision/controllers/faces_controller.dart';
 import 'package:twentyonevision/controllers/native_controller.dart';
 import 'package:twentyonevision/models/indexed_folder_model.dart';
 import 'package:twentyonevision/models/model_status.dart';
+import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
@@ -542,6 +545,31 @@ class _IndexingSection extends StatelessWidget {
     final percent = (progress * 100).round();
     final etaText = controller.scanEtaText;
 
+    // Indexing and finding faces take turns: every so many photos, indexing waits
+    // while their faces are found. The card shows whichever is happening right now.
+    return GetBuilder<FacesController>(
+      builder: (faces) => _buildCard(context, scan, progress, percent, etaText, faces.status),
+    );
+  }
+
+  Widget _buildCard(
+    BuildContext context,
+    IndexedFolder scan,
+    double progress,
+    int percent,
+    String? etaText,
+    FaceStatus faceStatus,
+  ) {
+    final findingFaces = faceStatus.running && faceStatus.batch;
+    final tuning = findingFaces && faceStatus.phase == 'tune';
+    final faceFraction = faceStatus.total <= 0
+        ? 0.0
+        : (faceStatus.processed / faceStatus.total).clamp(0.0, 1.0);
+    final muted = Theme.of(context).textTheme.bodySmall?.copyWith(
+      color: AppColors.ink48,
+      fontWeight: FontWeight.w600,
+    );
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -558,21 +586,30 @@ class _IndexingSection extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    '$percent%',
+                    findingFaces
+                        ? (tuning ? 'Optimising' : 'Finding faces')
+                        : '$percent%',
                     style: Theme.of(context).textTheme.headlineSmall,
                   ),
                   const SizedBox(width: AppSpacing.sm),
-                  if (scan.total > 0)
+                  if (findingFaces && !tuning && faceStatus.total > 0)
+                    Expanded(
+                      child: Text(
+                        '${faceStatus.processed} / ${faceStatus.total}',
+                        textAlign: TextAlign.right,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: muted,
+                      ),
+                    )
+                  else if (!findingFaces && scan.total > 0)
                     Expanded(
                       child: Text(
                         '${scan.processed} / ${scan.total}',
                         textAlign: TextAlign.right,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppColors.ink48,
-                          fontWeight: FontWeight.w600,
-                        ),
+                        style: muted,
                       ),
                     ),
                 ],
@@ -594,7 +631,11 @@ class _IndexingSection extends StatelessWidget {
                     ? const _ScanningPulseBar()
                     : LinearProgressIndicator(
                         minHeight: 6,
-                        value: progress,
+                        // Faces: how far through this batch; a one-off speed test has
+                        // no end to show. Otherwise indexing's own progress.
+                        value: findingFaces
+                            ? (tuning ? null : faceFraction)
+                            : progress,
                         backgroundColor: AppColors.hairline,
                         valueColor: const AlwaysStoppedAnimation<Color>(
                           AppColors.primary,
@@ -602,34 +643,63 @@ class _IndexingSection extends StatelessWidget {
                       ),
               ),
               const SizedBox(height: AppSpacing.sm),
-              Row(
-                children: [
-                  Text(
-                    _speedLabel,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: AppColors.ink48,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  if (etaText != null) ...[
-                    const SizedBox(width: AppSpacing.sm),
+              if (findingFaces)
+                Row(
+                  children: [
                     Expanded(
                       child: Text(
-                        '$etaText left',
-                        textAlign: TextAlign.right,
+                        tuning
+                            ? 'One-time speed test, about a minute'
+                            : 'Indexing carries on right after',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppColors.ink48,
-                          fontWeight: FontWeight.w600,
-                        ),
+                        style: muted,
                       ),
                     ),
+                    if (scan.total > 0) ...[
+                      const SizedBox(width: AppSpacing.sm),
+                      Text(
+                        '${scan.processed} / ${scan.total} indexed',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: muted,
+                      ),
+                    ],
                   ],
+                )
+              else ...[
+                Row(
+                  children: [
+                    Text(
+                      _speedLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: muted,
+                    ),
+                    if (etaText != null) ...[
+                      const SizedBox(width: AppSpacing.sm),
+                      Expanded(
+                        child: Text(
+                          '$etaText left',
+                          textAlign: TextAlign.right,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: muted,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                if (faceStatus.following && faceStatus.people > 0) ...[
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    '${faceStatus.people} ${faceStatus.people == 1 ? 'person' : 'people'} found so far',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: muted,
+                  ),
                 ],
-              ),
+              ],
               if (controller.recentThumbnails.isNotEmpty) ...[
                 const SizedBox(height: AppSpacing.base),
                 const Divider(height: 1, color: AppColors.hairline),

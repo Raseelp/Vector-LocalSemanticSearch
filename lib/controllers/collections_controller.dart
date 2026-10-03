@@ -297,6 +297,14 @@ class CollectionsController extends GetxController {
       return;
     }
     final native = Get.find<NativeController>();
+    if (native.totalEmbeddings == 0) {
+      // Nothing is indexed (it was just cleared, say): the counts and covers kept
+      // from before belong to an index that is gone, and would show collections
+      // full of photos that open onto nothing.
+      stats.clear();
+      coverBytes.clear();
+      _rebuildLists();
+    }
     if (!native.modelsReady || native.totalEmbeddings == 0) {
       _statsLoadedOnce = true;
       update();
@@ -363,6 +371,9 @@ class CollectionsController extends GetxController {
       if (native.modelsReady && native.totalEmbeddings > 0) {
         final scored = await NativeServices().scoreCollections([await _specFor(c)]);
         if (scored.isNotEmpty) stats[c.id] = _statsFromMap(scored.first);
+        _rebuildLists();
+      } else if (native.totalEmbeddings == 0) {
+        stats.remove(c.id);
         _rebuildLists();
       }
     } on ModelsNotReadyError {

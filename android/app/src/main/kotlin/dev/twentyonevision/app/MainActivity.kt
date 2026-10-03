@@ -30,7 +30,9 @@ import dev.twentyonevision.app.embedder.ScanEngineHolder
 import dev.twentyonevision.app.embedder.ScanForegroundService
 import dev.twentyonevision.app.embedder.ScanWorker
 import dev.twentyonevision.app.embedder.VideoFrameExtractor
+import dev.twentyonevision.app.embedder.BenchLog
 import dev.twentyonevision.app.embedder.faces.FaceClusterConfig
+import dev.twentyonevision.app.embedder.faces.FaceFollower
 import dev.twentyonevision.app.embedder.faces.FaceModelKind
 import dev.twentyonevision.app.embedder.faces.FaceScanHub
 import dev.twentyonevision.app.embedder.faces.FaceScanWorker
@@ -382,6 +384,14 @@ class MainActivity : FlutterActivity() {
 
                 "clearEmbeddings" -> {
                     embeddingEngine.clearAll()
+                    result.success(true)
+                }
+
+                // The performance logs (adb logcat -s VectorBench), on unless turned off.
+                "getBenchLogs" -> result.success(BenchLog.enabled(applicationContext))
+
+                "setBenchLogs" -> {
+                    BenchLog.setEnabled(applicationContext, call.argument<Boolean>("enabled") ?: true)
                     result.success(true)
                 }
 
@@ -759,9 +769,11 @@ class MainActivity : FlutterActivity() {
                 // running - unique work). Called on launch, when the Faces
                 // tab opens, and after indexing finishes.
                 "startFaceScan" -> faceTask(result) {
-                    // Not while indexing runs (they'd compete; indexing starts
-                    // it when it finishes) and only when there is something to do.
-                    if (ScanForegroundService.isScanActive) false
+                    // While indexing runs, faces are found in step with it (set up when it
+                    // starts; this covers it not being set up, e.g. after the model was
+                    // downloaded mid-scan). Otherwise the face worker, and only when there
+                    // is something to do.
+                    if (ScanForegroundService.isScanActive) FaceFollower.start(applicationContext)
                     else FaceScanWorker.enqueueIfNeeded(applicationContext)
                 }
 
@@ -772,8 +784,12 @@ class MainActivity : FlutterActivity() {
                         "photos" to photos,
                         "faces" to faceCount,
                         "people" to people,
-                        "running" to FaceScanHub.running,
+                        // Finding faces in step with an indexing scan counts as running
+                        // even between the batches it works through.
+                        "running" to (FaceScanHub.running || FaceFollower.isArmed()),
                         "paused" to (hub?.get("paused") == true && FaceScanHub.running),
+                        "following" to FaceFollower.isArmed(),
+                        "batch" to (hub?.get("batch") == true && FaceScanHub.running),
                         "userPaused" to FaceSettings.paused(applicationContext),
                         "processed" to photos,
                         "total" to ScanEngineHolder.embeddingEngine(applicationContext).indexedImages().size,
@@ -799,13 +815,15 @@ class MainActivity : FlutterActivity() {
                 // the automatic start leaves it alone until they resume.
                 "pauseFaceScan" -> faceTask(result) {
                     FaceSettings.setPaused(applicationContext, true)
+                    FaceFollower.stop()
                     WorkManager.getInstance(applicationContext).cancelUniqueWork(FaceScanWorker.UNIQUE_WORK_NAME)
                     true
                 }
 
                 "resumeFaceScan" -> faceTask(result) {
                     FaceSettings.setPaused(applicationContext, false)
-                    FaceScanWorker.enqueueIfNeeded(applicationContext)
+                    if (ScanForegroundService.isScanActive) FaceFollower.start(applicationContext)
+                    else FaceScanWorker.enqueueIfNeeded(applicationContext)
                 }
 
                 // Run the one-off speed test for this phone again.
@@ -1213,6 +1231,7 @@ class MainActivity : FlutterActivity() {
                 // Forget every face and person (including names) and search all photos again.
                 "resetFaces" -> faceTask(result) {
                     // Stop a running scan first so it doesn't write into the fresh start.
+                    FaceFollower.stop()
                     WorkManager.getInstance(applicationContext).cancelUniqueWork(FaceScanWorker.UNIQUE_WORK_NAME)
                     // Asking to start over is asking for it to run.
                     FaceSettings.setPaused(applicationContext, false)

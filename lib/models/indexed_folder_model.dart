@@ -36,6 +36,10 @@ class IndexedFolder {
   /// scan progress only, never persisted (see toMap).
   final int failed;
   final num elapsedMs;
+
+  /// [elapsedMs] without the time indexing spent waiting for faces to be found in a
+  /// batch it just indexed - what indexing's own speed is measured over.
+  final num activeMs;
   final String path;
   final int processed;
   final bool done;
@@ -54,12 +58,13 @@ class IndexedFolder {
     required this.skipped,
     this.failed = 0,
     required this.elapsedMs,
+    num? activeMs,
     required this.path,
     required this.processed,
     required this.done,
     this.updatedAt = 0,
     this.recentItems = const [],
-  });
+  }) : activeMs = activeMs ?? elapsedMs;
 
   factory IndexedFolder.fromMap(Map<dynamic, dynamic> map) {
     return IndexedFolder(
@@ -69,6 +74,7 @@ class IndexedFolder {
       skipped: map['skipped'] as int? ?? 0,
       failed: map['failed'] as int? ?? 0,
       elapsedMs: map['elapsedMs'] as num? ?? 0,
+      activeMs: map['activeMs'] as num?,
       path: map['path'] ?? '',
       processed: map['processed'] ?? 0,
       done: map['done'] ?? false,
@@ -117,6 +123,7 @@ class IndexedFolder {
     int? skipped,
     int? failed,
     num? elapsedMs,
+    num? activeMs,
     String? path,
     int? processed,
     bool? done,
@@ -130,6 +137,7 @@ class IndexedFolder {
       skipped: skipped ?? this.skipped,
       failed: failed ?? this.failed,
       elapsedMs: elapsedMs ?? this.elapsedMs,
+      activeMs: activeMs ?? this.activeMs,
       path: path ?? this.path,
       processed: processed ?? this.processed,
       done: done ?? this.done,

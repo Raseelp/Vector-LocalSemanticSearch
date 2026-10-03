@@ -8,6 +8,8 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
+import dev.twentyonevision.app.embedder.faces.FaceFollower
+import dev.twentyonevision.app.embedder.faces.FaceScanWorker
 
 // Runs the scan as WorkManager work, not a plain executor thread inside a
 // Service this app manages itself. The actual embedding logic
@@ -43,7 +45,14 @@ class ScanWorker(
             Log.w(TAG, "doWork: setForeground failed, continuing anyway: ${e.message}")
         }
 
+        // Faces are found in step with this scan: every so many photos it indexes, it
+        // waits while their faces are found, then carries on (see FaceFollower). The
+        // progress of both shows in this scan's one notification. A videos-only scan
+        // has no photos to find faces in.
         return try {
+            FaceFollower.openForScan()
+            if (contentMode != "videos") FaceFollower.start(applicationContext)
+
             val embeddingEngine = ScanEngineHolder.embeddingEngine(applicationContext)
             embeddingEngine.embedImages(mode, uri, folderId, contentMode) { progress ->
                 val map = mapOf(
@@ -52,6 +61,7 @@ class ScanWorker(
                     "processed" to progress.processed,
                     "embedded" to progress.embedded,
                     "elapsedMs" to progress.elapsedMs,
+                    "activeMs" to progress.activeMs,
                     "skipped" to progress.skipped,
                     "failed" to progress.failed,
                     "done" to progress.done,
@@ -71,18 +81,16 @@ class ScanWorker(
                     progress.processed,
                     progress.total,
                     progress.embedded,
-                    progress.elapsedMs
+                    progress.elapsedMs,
+                    progress.activeMs
                 )
-                try {
-                    NotificationManagerCompat.from(applicationContext)
-                        .notify(ScanForegroundService.NOTIFICATION_ID, notification)
-                } catch (e: Exception) {
-                    // Most likely a revoked POST_NOTIFICATIONS permission -
-                    // the notification just won't be visible, which is fine.
-                }
+                ScanForegroundService.postIfActive(applicationContext, notification)
             }
-            // The photos just indexed are ready for face grouping.
-            dev.twentyonevision.app.embedder.faces.FaceScanWorker.enqueueIfNeeded(applicationContext)
+            // Indexing is over: hand what is left (the photos after the last batch, the
+            // refining pass, videos) to the face worker.
+            FaceFollower.closeForScan()
+            FaceFollower.finish()
+            FaceScanWorker.enqueueIfNeeded(applicationContext)
             Result.success()
         } catch (e: Exception) {
             // embedImages already catches per-file problems internally
@@ -116,7 +124,10 @@ class ScanWorker(
             // action is the right way to try again for this case.
             Result.failure()
         } finally {
-            ScanForegroundService.onScanEnded()
+            // Whatever ended the scan, the face scan stops with it.
+            FaceFollower.closeForScan()
+            FaceFollower.finish()
+            ScanForegroundService.onScanEnded(applicationContext)
         }
     }
 

@@ -35,6 +35,7 @@ class NativeController extends GetxController with WidgetsBindingObserver {
   onInit() async {
     WidgetsBinding.instance.addObserver(this);
     await _loadPersistedPreferences();
+    unawaited(_loadBenchLogs());
     await checkModelsReady();
     await getAllFoldersList();
     await refreshLibraryStats();
@@ -1004,7 +1005,9 @@ class NativeController extends GetxController with WidgetsBindingObserver {
       final prev = _previousProgress;
       if (prev != null) {
         final embeddedDelta = newResult.embedded - prev.embedded;
-        final msDelta = newResult.elapsedMs - prev.elapsedMs;
+        // Over indexing's own time: the waits while faces are found for a batch
+        // would make it look slow (the time left still uses the real time).
+        final msDelta = newResult.activeMs - prev.activeMs;
         // Ignore a duplicate/out-of-order tick rather than divide by ~0 and
         // show a meaningless spike. Also ignore a tick that embedded
         // nothing (e.g. a run of already-indexed files getting skipped
@@ -1298,6 +1301,25 @@ class NativeController extends GetxController with WidgetsBindingObserver {
 
     await db.upsertFolder(folder: toSave);
     update();
+  }
+
+  // Timing logs for indexing and face finding (adb logcat -s VectorBench). The
+  // switch itself lives natively, where the logs are written; this mirrors it.
+  bool benchLogsEnabled = true;
+
+  Future<void> _loadBenchLogs() async {
+    try {
+      benchLogsEnabled = await NativeServices().benchLogsEnabled();
+      update();
+    } catch (_) {
+      // Stays on, the default.
+    }
+  }
+
+  Future<void> setBenchLogsEnabled(bool value) async {
+    benchLogsEnabled = value;
+    update();
+    await NativeServices().setBenchLogsEnabled(value);
   }
 
   Future<void> clearAllEmbeddings() async {

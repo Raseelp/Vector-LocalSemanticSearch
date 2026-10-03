@@ -44,6 +44,8 @@ object ScanForegroundService {
     // pushing it back out.
     private const val WAKE_LOCK_TIMEOUT_MS = 3 * 60 * 60 * 1000L // 3 hours
 
+    private const val FACE_REPOST_INTERVAL_MS = 2_000L
+
     // The notification's second line - fixed, not rotating. Also true:
     // it's all on-device, nothing leaves the phone.
     private const val REASSURING_PHRASE =
@@ -53,10 +55,46 @@ object ScanForegroundService {
         val processed: Int,
         val total: Int,
         val embedded: Int,
-        val elapsedMs: Long
+        val elapsedMs: Long,
+        // elapsedMs minus the time spent waiting for faces to be found (see ScanProgress).
+        val activeMs: Long = elapsedMs
     )
 
-    /** True while an indexing scan is running - face grouping waits for it. */
+    // Where the face scan that works in step with this scan has got to (see
+    // FaceFollower), shown in this same notification so there is only ever the one:
+    // [working] while it is finding the faces in a batch (indexing waits meanwhile),
+    // with processed/total counting that batch's photos.
+    private data class FaceSnapshot(
+        val working: Boolean,
+        val tuning: Boolean,
+        val processed: Int,
+        val total: Int,
+        val people: Int
+    )
+
+    @Volatile
+    private var faceSnapshot: FaceSnapshot? = null
+    @Volatile
+    private var lastFacePostAt = 0L
+
+    // Posting and taking down the notification never overlap (see onScanEnded).
+    private val notifyLock = Any()
+
+    /** Posts the scan's notification - unless the scan is already over. */
+    fun postIfActive(context: Context, notification: Notification) {
+        synchronized(notifyLock) {
+            if (!isScanActive) return
+            try {
+                androidx.core.app.NotificationManagerCompat.from(context.applicationContext)
+                    .notify(NOTIFICATION_ID, notification)
+            } catch (e: Exception) {
+                // Most likely a revoked POST_NOTIFICATIONS permission - the
+                // notification just won't be visible, which is fine.
+            }
+        }
+    }
+
+    /** True while an indexing scan is running - face grouping follows it, and waits for it to end. */
     @Volatile
     var isScanActive: Boolean = false
         private set
@@ -113,6 +151,7 @@ object ScanForegroundService {
     // and acquires the wake lock.
     fun onScanStarting(context: Context) {
         isScanActive = true
+        faceSnapshot = null
         lastSnapshot = null
         previousSnapshot = null
         lastProgressMap = null
@@ -124,8 +163,21 @@ object ScanForegroundService {
     // cancelled, or threw) - always releases the wake lock and clears the
     // cache, so activeProgress() correctly reports "nothing running" and
     // the next scan's first notification doesn't inherit stale numbers.
-    fun onScanEnded() {
-        isScanActive = false
+    fun onScanEnded(context: Context) {
+        synchronized(notifyLock) {
+            isScanActive = false
+            faceSnapshot = null
+            // WorkManager takes the notification down when the work is stopped, which can
+            // be before the scan has stopped posting to it - a late post would bring it
+            // back as an ongoing notification nothing would ever remove. Taking it down
+            // here, after the last possible post, makes sure it is gone.
+            try {
+                androidx.core.app.NotificationManagerCompat.from(context.applicationContext)
+                    .cancel(NOTIFICATION_ID)
+            } catch (e: Exception) {
+                // Nothing to take down.
+            }
+        }
         releaseWakeLock()
         lastSnapshot = null
         previousSnapshot = null
@@ -149,15 +201,54 @@ object ScanForegroundService {
         processed: Int,
         total: Int,
         embedded: Int,
-        elapsedMs: Long
+        elapsedMs: Long,
+        activeMs: Long = elapsedMs
     ): Notification {
         previousSnapshot = lastSnapshot
-        val snapshot = Snapshot(processed, total, embedded, elapsedMs)
+        val snapshot = Snapshot(processed, total, embedded, elapsedMs, activeMs)
         lastSnapshot = snapshot
         // Extends the wake lock's timeout rather than letting a long scan
         // outlast it - see the field's doc.
         acquireWakeLock(context)
         return buildNotification(context, snapshot)
+    }
+
+    // Called from the face scan's own thread on each of its status ticks. The
+    // notification is normally rebuilt on the indexing scan's ticks (which carry this
+    // along), but those can be far apart on a long video, so it is also re-posted from
+    // here - at most every couple of seconds.
+    fun updateFaceProgress(context: Context, status: Map<String, Any?>) {
+        val before = faceSnapshot
+        if (status["done"] == true && status["batch"] != true) {
+            faceSnapshot = null
+        } else {
+            faceSnapshot = FaceSnapshot(
+                working = status["batch"] == true,
+                tuning = status["phase"] == "tune",
+                processed = (status["processed"] as? Int) ?: 0,
+                total = (status["total"] as? Int) ?: 0,
+                people = (status["people"] as? Int) ?: 0
+            )
+        }
+        // Not once the scan is over - that would bring its notification back.
+        val snapshot = lastSnapshot ?: return
+        val now = System.currentTimeMillis()
+        // Switching between "indexing" and "finding faces" shows at once; progress within
+        // one of them can wait for the next couple of seconds.
+        val switched = (before?.working == true) != (faceSnapshot?.working == true)
+        if (!switched && now - lastFacePostAt < FACE_REPOST_INTERVAL_MS) return
+        lastFacePostAt = now
+        postIfActive(context, buildNotification(context, snapshot))
+    }
+
+    fun clearFaceProgress() {
+        faceSnapshot = null
+    }
+
+    private fun peopleLine(): String? {
+        val people = faceSnapshot?.people ?: return null
+        if (people <= 0) return null
+        return "$people ${if (people == 1) "person" else "people"} found so far"
     }
 
     private fun acquireWakeLock(context: Context) {
@@ -187,31 +278,55 @@ object ScanForegroundService {
     private fun buildNotification(context: Context, snapshot: Snapshot): Notification {
         val (processed, total) = snapshot
         val percent = if (total > 0) (processed * 100 / total) else 0
+        val face = faceSnapshot?.takeIf { it.working }
 
         // The title is always what's on screen, collapsed or not - the
         // concrete numbers go there so they never depend on the user
         // expanding the notification. The second line is nice to have,
         // not load-bearing, so it's fine if an OEM shade only shows it
         // on expand.
-        val title = if (total <= 0) {
-            "Preparing to index..."
+        //
+        // What is happening right now decides all of it: while faces are being found
+        // for the batch just indexed (indexing waits for that), the title and the bar
+        // are about the faces; the rest of the time they are about indexing.
+        val title: String
+        val barPercent: Int
+        val barIndeterminate: Boolean
+        val body: String
+        if (face != null) {
+            title = if (face.tuning) {
+                "Optimising face search for your phone (one time)"
+            } else {
+                "Finding faces  •  ${face.processed}/${face.total} photos"
+            }
+            barPercent = if (face.total > 0) (face.processed * 100 / face.total).coerceIn(0, 100) else 0
+            barIndeterminate = face.tuning || face.total <= 0
+            body = if (total > 0) "Indexing resumes next  •  $processed/$total indexed" else "Indexing resumes next"
         } else {
-            val parts = mutableListOf("$percent%", "$processed/$total")
-            speedLabel(snapshot)?.let { parts.add(it) }
-            etaLabel(snapshot)?.let { parts.add("$it left") }
-            parts.joinToString("  •  ")
+            title = if (total <= 0) {
+                "Preparing to index..."
+            } else {
+                val parts = mutableListOf("$percent%", "$processed/$total")
+                speedLabel(snapshot)?.let { parts.add(it) }
+                etaLabel(snapshot)?.let { parts.add("$it left") }
+                parts.joinToString("  •  ")
+            }
+            barPercent = percent
+            barIndeterminate = total <= 0
+            body = peopleLine() ?: REASSURING_PHRASE
         }
+        val expanded = if (body != REASSURING_PHRASE) body + '\n' + REASSURING_PHRASE else REASSURING_PHRASE
 
         return NotificationCompat.Builder(context.applicationContext, CHANNEL_ID)
             .setContentTitle(title)
-            .setContentText(REASSURING_PHRASE)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(REASSURING_PHRASE))
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(expanded))
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setColor(Color.parseColor("#165E59"))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setProgress(100, percent, total <= 0)
+            .setProgress(100, barPercent, barIndeterminate)
             .setContentIntent(contentIntent(context))
             .build()
     }
@@ -231,7 +346,8 @@ object ScanForegroundService {
     // in-app bar's recentEmbeddingsPerSecond.
     private fun speedLabel(snapshot: Snapshot): String? {
         val prev = previousSnapshot ?: return null
-        val msDelta = snapshot.elapsedMs - prev.elapsedMs
+        // Over indexing's own time: the waits for faces would make it look slow.
+        val msDelta = snapshot.activeMs - prev.activeMs
         if (msDelta <= 200) return null
         val perSecond = (snapshot.embedded - prev.embedded) / (msDelta / 1000.0)
         if (perSecond <= 0) return null

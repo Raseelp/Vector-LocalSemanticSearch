@@ -228,135 +228,80 @@ class PersonTile extends StatelessWidget {
   }
 }
 
-/// Live progress of the automatic face scan. The people found so far are
-/// already usable underneath it.
-class FaceScanCard extends StatelessWidget {
-  const FaceScanCard({
+/// Where the face scan is, as a small pill that takes the place of the "Sync faces"
+/// button while it runs: a progress ring, what it is doing, and pause / resume.
+class FaceSyncPill extends StatelessWidget {
+  const FaceSyncPill({
     super.key,
     required this.status,
     required this.onPause,
     required this.onResume,
-    this.photosPerSecond,
-    this.eta,
   });
 
   final FaceStatus status;
-
-  /// Current speed and time left, from the controller (null while unknown).
-  final double? photosPerSecond;
-  final Duration? eta;
   final VoidCallback onPause;
   final VoidCallback onResume;
 
-  static String? _speed(double? perSecond, {bool videos = false}) {
-    if (perSecond == null || perSecond <= 0) return null;
-    final unit = videos ? 'videos' : 'photos';
-    if (perSecond >= 1) return '${perSecond.toStringAsFixed(1)} $unit/s';
-    return '${(perSecond * 60).round()} $unit/min';
-  }
-
-  static String _eta(Duration d) {
-    if (d.inHours >= 1) return '${d.inHours} h ${d.inMinutes % 60} min left';
-    if (d.inMinutes >= 1) return '${d.inMinutes} min left';
-    return 'under a minute left';
-  }
-
   @override
   Widget build(BuildContext context) {
-    final textTheme = Theme.of(context).textTheme;
-
     final stopped = status.userPaused;
+    final waiting = status.paused && !stopped;
     final tuning = status.phase == 'tune';
-    final refining = status.phase == 'refine';
-    final videos = status.phase == 'videos';
-    final title = stopped
-        ? 'Face search paused'
-        : status.paused
-            ? 'Waiting for indexing to finish'
+    final label = stopped
+        ? 'Paused'
+        : waiting
+            ? 'Waiting for indexing'
             : tuning
                 ? 'Optimising for your phone'
-                : refining
-                    ? 'Refining small and blurry faces'
-                    : videos
-                        ? 'Finding faces in videos'
+                : status.phase == 'refine'
+                    ? 'Refining'
+                    : status.phase == 'videos'
+                        ? 'Videos'
                         : 'Finding faces';
-    final details = <String>[
-      if (tuning && !stopped) 'One-time speed test, about a minute',
-      if (!tuning && status.total > 0) '${status.processed} of ${status.total} ${videos ? 'videos' : 'photos'}',
-      if (!tuning && status.faces > 0) '${status.faces} faces',
-    ];
-    // Speed and time left: only once there's a real reading, and not while stopped.
-    final speed = _speed(photosPerSecond, videos: videos);
-    if (!stopped && !tuning) {
-      if (speed != null) details.add(speed);
-      final left = eta;
-      if (left != null) details.add(_eta(left));
-    }
+    final showCount = !stopped && !waiting && !tuning && status.total > 0;
+    final text = showCount ? '$label  ${status.processed}/${status.total}' : label;
 
     return Container(
-      padding: const EdgeInsets.all(AppSpacing.base),
+      height: 32,
+      padding: const EdgeInsets.only(left: AppSpacing.sm, right: 2),
       decoration: BoxDecoration(
         color: AppColors.parchment,
-        borderRadius: BorderRadius.circular(AppRadius.lg),
+        borderRadius: BorderRadius.circular(AppRadius.pill),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            children: [
-              const Icon(Icons.face_retouching_natural, size: 18, color: AppColors.primary),
-              const SizedBox(width: AppSpacing.sm),
-              Expanded(child: Text(title, style: textTheme.titleSmall)),
-              if (status.fraction != null)
-                Padding(
-                  padding: const EdgeInsets.only(right: AppSpacing.xs),
-                  child: Text(
-                    '${(status.fraction! * 100).floor()}%',
-                    style: textTheme.titleSmall?.copyWith(color: AppColors.primary),
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: stopped
+                ? const Icon(Icons.pause_rounded, size: 14, color: AppColors.ink48)
+                : CircularProgressIndicator(
+                    strokeWidth: 2,
+                    value: (waiting || tuning) ? null : status.fraction,
+                    color: AppColors.primary,
+                    backgroundColor: AppColors.hairline,
                   ),
-                ),
-              // The user's control: stop the scan, or start it again.
-              SizedBox(
-                width: 36,
-                height: 36,
-                child: IconButton.filled(
-                  padding: EdgeInsets.zero,
-                  tooltip: stopped ? 'Resume' : 'Pause',
-                  style: IconButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    foregroundColor: AppColors.onPrimary,
-                  ),
-                  icon: Icon(stopped ? Icons.play_arrow_rounded : Icons.pause_rounded, size: 20),
-                  onPressed: stopped ? onResume : onPause,
-                ),
-              ),
-            ],
           ),
-          const SizedBox(height: AppSpacing.md),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(AppRadius.pill),
-            child: LinearProgressIndicator(
-              value: (status.paused && !stopped) ? null : status.fraction,
-              minHeight: 5,
-              backgroundColor: AppColors.hairline,
-              color: AppColors.primary,
+          const SizedBox(width: AppSpacing.sm),
+          Flexible(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(color: AppColors.ink80),
             ),
           ),
-          const SizedBox(height: AppSpacing.sm),
-          Text(
-            details.isEmpty ? 'Getting started...' : details.join('  ·  '),
-            style: textTheme.bodySmall?.copyWith(color: AppColors.ink80),
-          ),
-          const SizedBox(height: AppSpacing.xxs),
-          Text(
-            stopped
-                ? 'Stopped. It stays stopped until you resume.'
-                : refining
-                    ? 'The clear faces are done - now the small ones are matched to the same people.'
-                    : videos
-                        ? 'Photos are done - now the videos, a few seconds each. It only looks at some frames of each.'
-                        : 'People show up below as they are found. This runs by itself, on this device only.',
-            style: textTheme.bodySmall?.copyWith(color: AppColors.ink48, height: 1.4),
+          SizedBox(
+            width: 28,
+            height: 28,
+            child: IconButton(
+              padding: EdgeInsets.zero,
+              tooltip: stopped ? 'Resume' : 'Pause',
+              color: AppColors.ink48,
+              icon: Icon(stopped ? Icons.play_arrow_rounded : Icons.pause_rounded, size: 18),
+              onPressed: stopped ? onResume : onPause,
+            ),
           ),
         ],
       ),

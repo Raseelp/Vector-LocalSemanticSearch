@@ -19,8 +19,14 @@ class SettingsScreen extends StatelessWidget {
       builder: (controller) {
         final modelBytes = controller.searchModelBytes;
         final modelsVerified = controller.searchModelsVerified;
+        final hasEmbeddings =
+            controller.totalEmbeddings > 0 ||
+            controller.allIndexedFoldersList.isNotEmpty;
         // Everything a delete would free: the search models plus the downloaded face model.
-        final deletableBytes = (controller.searchModelsVerified ? controller.searchModelBytes : 0) +
+        final deletableBytes =
+            (controller.searchModelsVerified
+                ? controller.searchModelBytes
+                : 0) +
             (controller.faceModelVerified ? controller.faceModelBytes : 0);
 
         return Scaffold(
@@ -46,7 +52,9 @@ class SettingsScreen extends StatelessWidget {
                                 ? Icons.verified_outlined
                                 : Icons.download_for_offline_outlined,
                             accentIcon: modelsVerified,
-                            title: modelsVerified ? 'Search model (CLIP)' : 'Search model - not ready',
+                            title: modelsVerified
+                                ? 'Search model (CLIP)'
+                                : 'Search model - not ready',
                             subtitle: modelsVerified
                                 ? 'Finds photos by meaning  ·  ${ModelDownloadProgress.formatBytes(modelBytes)}  ·  verified'
                                 : null,
@@ -62,7 +70,8 @@ class SettingsScreen extends StatelessWidget {
                             icon: Icons.verified_outlined,
                             accentIcon: true,
                             title: 'Face detector',
-                            subtitle: 'Finds where faces are in photos and videos  ·  about 3 MB  ·  built in',
+                            subtitle:
+                                'Finds where faces are in photos and videos  ·  about 3 MB  ·  built in',
                             trailing: Icon(
                               Icons.check_circle_rounded,
                               color: AppColors.primary,
@@ -73,7 +82,9 @@ class SettingsScreen extends StatelessWidget {
                             builder: (faces) {
                               // Ready also covers a model placed on the device by hand.
                               final ready = faces.status.ready;
-                              final size = ModelDownloadProgress.formatBytes(controller.faceModelBytes);
+                              final size = ModelDownloadProgress.formatBytes(
+                                controller.faceModelBytes,
+                              );
                               return _SettingsRow(
                                 icon: ready
                                     ? Icons.verified_outlined
@@ -96,14 +107,17 @@ class SettingsScreen extends StatelessWidget {
                         ],
                       ),
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(AppSpacing.xs, AppSpacing.sm, AppSpacing.xs, 0),
+                        padding: const EdgeInsets.fromLTRB(
+                          AppSpacing.xs,
+                          AppSpacing.sm,
+                          AppSpacing.xs,
+                          0,
+                        ),
                         child: Text(
                           'All the models run only on this device. Your photos, faces and names are never uploaded, '
                           'and nothing needs the internet once they are downloaded.',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: AppColors.ink48,
-                            height: 1.4,
-                          ),
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: AppColors.ink48, height: 1.4),
                         ),
                       ),
                       const SizedBox(height: AppSpacing.xl),
@@ -120,7 +134,9 @@ class SettingsScreen extends StatelessWidget {
                               subtitle: collections.isScoring
                                   ? 'Working on it...'
                                   : 'Recompute every collection from scratch',
-                              onTap: collections.isScoring ? null : collections.resyncAll,
+                              onTap: collections.isScoring
+                                  ? null
+                                  : collections.resyncAll,
                             ),
                             _TapRow(
                               icon: Icons.restart_alt_rounded,
@@ -134,6 +150,23 @@ class SettingsScreen extends StatelessWidget {
                             ),
                           ],
                         ),
+                      ),
+                      const SizedBox(height: AppSpacing.xl),
+                      const _GroupLabel('Diagnostics'),
+                      _GroupCard(
+                        children: [
+                          _SettingsRow(
+                            icon: Icons.speed_rounded,
+                            title: 'Performance logs',
+                            subtitle:
+                                'Prints how long indexing and finding faces take, for tracking down what is slow. '
+                                'Read them with: adb logcat -s VectorBench',
+                            trailing: Switch(
+                              value: controller.benchLogsEnabled,
+                              onChanged: controller.setBenchLogsEnabled,
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: AppSpacing.xl),
                       const _GroupLabel('Danger zone'),
@@ -154,23 +187,55 @@ class SettingsScreen extends StatelessWidget {
                                   controller.deleteModels().then((_) {
                                     // Back to the root: the app gate now shows the setup screen.
                                     if (context.mounted) {
-                                      Navigator.of(context).popUntil((route) => route.isFirst);
+                                      Navigator.of(
+                                        context,
+                                      ).popUntil((route) => route.isFirst);
                                     }
                                   });
                                 },
                               ),
                             ),
+                          // Greyed out once there is nothing left to clear.
                           _DangerRow(
                             title: 'Clear all embeddings',
-                            subtitle: 'Forgets everything indexed',
-                            onTap: () => showConfirmDialog(
-                              context,
-                              title: 'Clear all embeddings?',
-                              message:
-                                  'This removes every generated embedding and forgets all indexed folders. You will need to re-scan to search again.',
-                              confirmLabel: 'Clear',
-                              onConfirm: controller.clearAllEmbeddings,
-                            ),
+                            subtitle: hasEmbeddings
+                                ? 'Forgets everything indexed for search'
+                                : 'Nothing indexed yet',
+                            onTap: !hasEmbeddings
+                                ? null
+                                : () => showConfirmDialog(
+                                    context,
+                                    title: 'Clear all embeddings?',
+                                    message:
+                                        'This removes every generated search embedding and forgets all indexed folders. You will need to re-scan to search again. The people already found are kept - see "Clear face data" for those.',
+                                    confirmLabel: 'Clear',
+                                    onConfirm: controller.clearAllEmbeddings,
+                                  ),
+                          ),
+                          GetBuilder<FacesController>(
+                            builder: (faces) {
+                              final st = faces.status;
+                              final hasFaceData =
+                                  st.faces > 0 ||
+                                  st.people > 0 ||
+                                  st.processed > 0;
+                              return _DangerRow(
+                                title: 'Clear face data',
+                                subtitle: hasFaceData
+                                    ? 'Forgets every group and name, then finds faces again'
+                                    : 'No face data yet',
+                                onTap: !hasFaceData
+                                    ? null
+                                    : () => showConfirmDialog(
+                                        context,
+                                        title: 'Clear face data?',
+                                        message:
+                                            'All groups and the names you gave will be removed, and every indexed photo is searched for faces again.',
+                                        confirmLabel: 'Clear',
+                                        onConfirm: faces.rescanEverything,
+                                      ),
+                              );
+                            },
                           ),
                         ],
                       ),
@@ -192,11 +257,20 @@ class _SettingsTopBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(AppSpacing.sm, AppSpacing.xs, AppSpacing.xl, 0),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.sm,
+        AppSpacing.xs,
+        AppSpacing.xl,
+        0,
+      ),
       child: Row(
         children: [
           IconButton(
-            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18, color: AppColors.ink),
+            icon: const Icon(
+              Icons.arrow_back_ios_new_rounded,
+              size: 18,
+              color: AppColors.ink,
+            ),
             onPressed: () => Navigator.of(context).pop(),
           ),
           Text('Settings', style: Theme.of(context).textTheme.titleLarge),
@@ -214,12 +288,18 @@ class _GroupLabel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(AppSpacing.xs, 0, AppSpacing.xs, AppSpacing.sm),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.xs,
+        0,
+        AppSpacing.xs,
+        AppSpacing.sm,
+      ),
       child: Text(
         text.toUpperCase(),
-        style: Theme.of(
-          context,
-        ).textTheme.labelSmall?.copyWith(color: AppColors.ink48, letterSpacing: 0.5),
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: AppColors.ink48,
+          letterSpacing: 0.5,
+        ),
       ),
     );
   }
@@ -237,6 +317,7 @@ class _GroupCard extends StatelessWidget {
       child: ColoredBox(
         color: AppColors.pearl,
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             for (int i = 0; i < children.length; i++) ...[
               if (i > 0) const Divider(height: 1, color: AppColors.dividerSoft),
@@ -267,11 +348,18 @@ class _SettingsRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.md),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.base,
+        vertical: AppSpacing.md,
+      ),
       child: Row(
         // Long text wraps to more lines instead of being cut off.
         children: [
-          Icon(icon, size: 18, color: accentIcon ? AppColors.primary : AppColors.ink48),
+          Icon(
+            icon,
+            size: 18,
+            color: accentIcon ? AppColors.primary : AppColors.ink48,
+          ),
           const SizedBox(width: AppSpacing.md),
           Expanded(
             child: Column(
@@ -279,9 +367,9 @@ class _SettingsRow extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleSmall?.copyWith(color: accentIcon ? AppColors.primary : null),
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    color: accentIcon ? AppColors.primary : null,
+                  ),
                 ),
                 if (subtitle != null) ...[
                   const SizedBox(height: 1),
@@ -304,31 +392,47 @@ class _SettingsRow extends StatelessWidget {
 }
 
 class _DangerRow extends StatelessWidget {
-  const _DangerRow({required this.title, required this.subtitle, required this.onTap});
+  const _DangerRow({
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
 
   final String title;
   final String subtitle;
-  final VoidCallback onTap;
+
+  /// Null greys the row out: there is nothing for it to do.
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.md),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(color: AppColors.danger),
-            ),
-            const SizedBox(height: 1),
-            Text(
-              subtitle,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppColors.ink48),
-            ),
-          ],
+      child: Opacity(
+        opacity: onTap == null ? 0.4 : 1,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.base,
+            vertical: AppSpacing.md,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(color: AppColors.danger),
+              ),
+              const SizedBox(height: 1),
+              Text(
+                subtitle,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: AppColors.ink48),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -360,7 +464,8 @@ class _PermissionsCard extends StatefulWidget {
   State<_PermissionsCard> createState() => _PermissionsCardState();
 }
 
-class _PermissionsCardState extends State<_PermissionsCard> with WidgetsBindingObserver {
+class _PermissionsCardState extends State<_PermissionsCard>
+    with WidgetsBindingObserver {
   bool? _photosGranted;
   bool? _videosGranted;
 
@@ -399,7 +504,8 @@ class _PermissionsCardState extends State<_PermissionsCard> with WidgetsBindingO
     // Always shows every status row, granted or not - hiding the whole
     // card once granted left the "Permissions" label sitting above
     // nothing, which reads as broken rather than as good news.
-    final needsStorageGrant = _photosGranted == false || _videosGranted == false;
+    final needsStorageGrant =
+        _photosGranted == false || _videosGranted == false;
     final needsNotificationGrant = !controller.backgroundNotificationsGranted;
 
     return _GroupCard(
@@ -464,21 +570,32 @@ class _PermissionRow extends StatelessWidget {
         : (isGranted ? AppColors.primary : AppColors.danger);
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.base, vertical: AppSpacing.md),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.base,
+        vertical: AppSpacing.md,
+      ),
       child: Row(
         children: [
           Icon(
             granted == null
                 ? Icons.hourglass_empty_rounded
-                : (isGranted ? Icons.check_circle_rounded : Icons.cancel_outlined),
+                : (isGranted
+                      ? Icons.check_circle_rounded
+                      : Icons.cancel_outlined),
             size: 16,
             color: color,
           ),
           const SizedBox(width: AppSpacing.sm),
-          Expanded(child: Text(label, style: Theme.of(context).textTheme.titleSmall)),
+          Expanded(
+            child: Text(label, style: Theme.of(context).textTheme.titleSmall),
+          ),
           Text(
-            granted == null ? 'Checking...' : (isGranted ? 'Granted' : 'Not granted'),
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: color),
+            granted == null
+                ? 'Checking...'
+                : (isGranted ? 'Granted' : 'Not granted'),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: color),
           ),
         ],
       ),
@@ -489,7 +606,12 @@ class _PermissionRow extends StatelessWidget {
 // A settings row that does something when tapped - dimmed and inert when
 // [onTap] is null.
 class _TapRow extends StatelessWidget {
-  const _TapRow({required this.icon, required this.title, required this.subtitle, required this.onTap});
+  const _TapRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
 
   final IconData icon;
   final String title;

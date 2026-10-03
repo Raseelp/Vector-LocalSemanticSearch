@@ -24,10 +24,6 @@ class FacesTab extends StatelessWidget {
       builder: (faces) {
         final status = faces.status;
         final textTheme = Theme.of(context).textTheme;
-        // Shown while it runs, and while it is stopped by the user with photos left.
-        final scanning =
-            status.error == null &&
-            (status.running || (status.userPaused && status.remaining > 0));
         final noModel = !status.ready || status.error == 'no_model';
 
         final selecting = faces.selecting;
@@ -89,6 +85,9 @@ class FacesTab extends StatelessWidget {
                       ),
               ),
             ),
+            // Faces are found along with indexing, so this is only a quiet way to
+            // catch up on anything that was missed. Pressing it turns the button into
+            // a small progress pill, and back when the scan is over.
             if (noModel)
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(
@@ -99,21 +98,40 @@ class FacesTab extends StatelessWidget {
                 ),
                 sliver: const SliverToBoxAdapter(child: NoFaceModelCard()),
               )
-            else if (scanning)
+            else
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(
-                  AppSpacing.xl,
-                  AppSpacing.sm,
+                  AppSpacing.lg,
+                  0,
                   AppSpacing.xl,
                   0,
                 ),
                 sliver: SliverToBoxAdapter(
-                  child: FaceScanCard(
-                    status: status,
-                    onPause: faces.pauseScan,
-                    onResume: faces.resumeScan,
-                    photosPerSecond: faces.scanRate,
-                    eta: faces.scanEta,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: AnimatedSize(
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeOutCubic,
+                      alignment: Alignment.centerLeft,
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 220),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeInCubic,
+                        child: faces.syncing && status.error == null
+                            ? FaceSyncPill(
+                                key: const ValueKey('pill'),
+                                status: status,
+                                onPause: faces.pauseScan,
+                                onResume: faces.resumeScan,
+                              )
+                            : selecting
+                                ? const SizedBox.shrink(key: ValueKey('none'))
+                                : _SyncFacesButton(
+                                    key: const ValueKey('button'),
+                                    faces: faces,
+                                  ),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -184,6 +202,41 @@ class FacesTab extends StatelessWidget {
   }
 }
 
+/// A small, quiet "Sync faces": runs the face scan over whatever was missed and
+/// brings up its progress, or says everything is already covered.
+class _SyncFacesButton extends StatelessWidget {
+  const _SyncFacesButton({super.key, required this.faces});
+
+  final FacesController faces;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextButton.icon(
+      style: TextButton.styleFrom(
+        foregroundColor: AppColors.ink48,
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+        minimumSize: const Size(0, 32),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+      ),
+      icon: const Icon(Icons.sync_rounded, size: 16),
+      label: Text(
+        'Sync faces',
+        style: Theme.of(context).textTheme.labelMedium,
+      ),
+      onPressed: () async {
+        final messenger = ScaffoldMessenger.of(context);
+        final started = await faces.syncFaces();
+        if (!started) {
+          messenger.showSnackBar(
+            const SnackBar(content: Text('Faces are up to date')),
+          );
+        }
+      },
+    );
+  }
+}
+
 class _EmptyState extends StatelessWidget {
   const _EmptyState({required this.status, required this.loading});
 
@@ -199,6 +252,9 @@ class _EmptyState extends StatelessWidget {
       message = '';
     } else if (!status.ready) {
       message = '';
+    } else if (status.running && status.following) {
+      message =
+          'Finding people as your photos are indexed. They appear here as soon as the same face turns up in two photos.';
     } else if (status.running) {
       message =
           'Nobody yet. People appear here as soon as the same face turns up in two photos.';

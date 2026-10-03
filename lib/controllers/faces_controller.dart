@@ -42,13 +42,35 @@ class FacesController extends GetxController {
 
   /// Asks for the scan to run (it does nothing if it already is, and only
   /// looks at photos not done yet). Safe to call whenever it might help: on
-  /// launch, when the Faces tab opens, after indexing finishes.
-  Future<void> startScan() async {
+  /// launch, when the Faces tab opens, after indexing finishes. True if it is
+  /// running now, false if there was nothing for it to do.
+  Future<bool> startScan() async {
     try {
-      await _native.startFaceScan();
+      return await _native.startFaceScan();
     } catch (e) {
       debugPrint('startFaceScan failed: $e');
+      return false;
     }
+  }
+
+  /// Whether the People tab is showing a sync's progress. Faces are found by
+  /// themselves along with indexing, so that is only after "Sync faces".
+  bool syncing = false;
+
+  /// "Sync faces": catches up on whatever the automatic scan hasn't covered (the
+  /// photos after the last batch, small and blurry faces, videos) and shows its
+  /// progress. False if there was nothing for it to do.
+  Future<bool> syncFaces() async {
+    if (status.userPaused && status.remaining > 0) {
+      // Stopped by the user with photos left: asking to sync is asking it to run.
+      await resumeScan();
+    } else if (!status.running) {
+      final started = await startScan();
+      if (!started) return false;
+    }
+    syncing = true;
+    update();
+    return true;
   }
 
   /// The face recognition model was downloaded or removed: look again, and
@@ -97,7 +119,7 @@ class FacesController extends GetxController {
   /// Time left at the current speed, or null while the speed isn't known.
   Duration? get scanEta {
     final rate = _rate;
-    if (rate == null || rate <= 0 || !status.running || status.paused) return null;
+    if (rate == null || rate <= 0 || !status.running || status.paused || status.following) return null;
     // Only the pass running now: the refining pass goes at a different pace.
     final remaining = status.phaseRemaining;
     if (remaining <= 0) return null;
@@ -129,6 +151,8 @@ class FacesController extends GetxController {
   void _onProgress(FaceStatus tick) {
     final wasRunning = status.running;
     status = tick.mergedOnto(status);
+    // A sync ends with the scan: the progress card goes with it.
+    if (tick.done && !tick.batch) syncing = false;
     _updateRate(tick);
     update();
 

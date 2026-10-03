@@ -14,6 +14,10 @@ data class ScanProgress(
     val embedded: Int,
     val skipped: Int,
     val elapsedMs: Long,
+    // elapsedMs without the time spent waiting for the face scan to work through a
+    // batch of photos just indexed (see ScanHandoff) - what indexing's own speed is
+    // measured over; elapsedMs (the real time) is what the time left is worked out from.
+    val activeMs: Long = elapsedMs,
     val done: Boolean,
     val path: String,
     val recentItems: List<RecentEmbeddedItem> = emptyList(),

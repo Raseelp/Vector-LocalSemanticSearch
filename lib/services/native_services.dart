@@ -295,9 +295,10 @@ class NativeServices {
       .receiveBroadcastStream()
       .map((e) => FaceStatus.fromMap(e as Map<dynamic, dynamic>));
 
-  /// Starts the automatic face scan; does nothing if it is already running.
-  Future<void> startFaceScan() async {
-    await _channel.invokeMethod('startFaceScan');
+  /// Starts the face scan; does nothing if it is already running. True if it is running
+  /// now, false if there was nothing for it to do.
+  Future<bool> startFaceScan() async {
+    return await _channel.invokeMethod<bool>('startFaceScan') ?? false;
   }
 
   /// Stops the face scan and keeps it stopped (nothing restarts it automatically).
@@ -737,6 +738,13 @@ class NativeServices {
         0;
   }
 
+  /// The performance logs (adb logcat -s VectorBench): on unless turned off.
+  Future<bool> benchLogsEnabled() async =>
+      await _channel.invokeMethod<bool>('getBenchLogs') ?? true;
+
+  Future<void> setBenchLogsEnabled(bool value) =>
+      _channel.invokeMethod('setBenchLogs', {'enabled': value});
+
   Future<void> clearEmbeddings() async {
     await _channel.invokeMethod('clearEmbeddings');
   }
@@ -1094,6 +1102,8 @@ class FaceStatus {
     this.userPaused = false,
     this.done = false,
     this.phase = 'scan',
+    this.following = false,
+    this.batch = false,
     this.refine = true,
     this.deferredPhotos = 0,
     this.tuning,
@@ -1122,6 +1132,14 @@ class FaceStatus {
   // 'refine' (the small / blurry ones, afterwards) or 'tune' (a one-off speed
   // test for this phone). While refining, processed/total count photos of that pass.
   final String phase;
+
+  // True while the scan is following an indexing scan that is still running,
+  // finding faces in photos as they are indexed (the total is still growing).
+  final bool following;
+
+  // True while it is finding the faces in a batch of photos indexing has just done
+  // (indexing waits meanwhile); processed/total then count that batch.
+  final bool batch;
 
   // Whether the refining pass is switched on, and how many photos still have
   // faces waiting for it.
@@ -1158,6 +1176,8 @@ class FaceStatus {
     userPaused: value,
     done: done,
     phase: phase,
+    following: following,
+    batch: batch,
     refine: refine,
     deferredPhotos: deferredPhotos,
     tuning: tuning,
@@ -1184,7 +1204,7 @@ class FaceStatus {
 
   /// Rough time left, from this run's pace; null until there is enough to go on.
   Duration? get eta {
-    if (!running || paused || runProcessed < 10 || elapsedMs < 4000)
+    if (!running || paused || following || runProcessed < 10 || elapsedMs < 4000)
       return null;
     final remaining = total - processed;
     if (remaining <= 0) return null;
@@ -1199,6 +1219,8 @@ class FaceStatus {
     userPaused: userPaused,
     done: done,
     phase: phase,
+    following: following,
+    batch: batch,
     refine: previous.refine,
     deferredPhotos: previous.deferredPhotos,
     tuning: previous.tuning,
@@ -1226,6 +1248,8 @@ class FaceStatus {
     userPaused: m['userPaused'] as bool? ?? false,
     done: m['done'] as bool? ?? false,
     phase: m['phase'] as String? ?? 'scan',
+    following: m['following'] as bool? ?? false,
+    batch: m['batch'] as bool? ?? false,
     refine: m['refine'] as bool? ?? true,
     deferredPhotos: (m['deferredPhotos'] as num?)?.toInt() ?? 0,
     tuning: m['tuning'] as String?,

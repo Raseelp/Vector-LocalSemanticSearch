@@ -49,15 +49,19 @@ class FaceScanWorker(context: Context, params: WorkerParameters) : CoroutineWork
                     val now = System.currentTimeMillis()
                     if (now - lastNotified < NOTIFY_INTERVAL_MS && status["done"] != true) return@run
                     lastNotified = now
+                    if (isStopped) return@run
                     val processed = (status["processed"] as? Int) ?: 0
                     val total = (status["total"] as? Int) ?: 0
                     val paused = status["paused"] == true
                     val phase = status["phase"] as? String ?: "scan"
-                    try {
-                        NotificationManagerCompat.from(applicationContext)
-                            .notify(NOTIFICATION_ID, buildNotification(processed, total, paused, phase))
-                    } catch (_: Exception) {
-                        // Notification permission revoked - fine.
+                    synchronized(notifyLock) {
+                        if (ended) return@run
+                        try {
+                            NotificationManagerCompat.from(applicationContext)
+                                .notify(NOTIFICATION_ID, buildNotification(processed, total, paused, phase))
+                        } catch (_: Exception) {
+                            // Notification permission revoked - fine.
+                        }
                     }
                 }
             }
@@ -78,8 +82,22 @@ class FaceScanWorker(context: Context, params: WorkerParameters) : CoroutineWork
             Result.failure()
         } finally {
             FaceScanHub.running = false
+            // WorkManager takes the notification down as soon as the work is stopped,
+            // which can be before the last status tick has been posted - that would
+            // bring it back as an ongoing notification nothing would ever remove. So
+            // nothing is posted after this, and it is taken down here, after the last post.
+            synchronized(notifyLock) {
+                ended = true
+                try {
+                    NotificationManagerCompat.from(applicationContext).cancel(NOTIFICATION_ID)
+                } catch (_: Exception) {
+                }
+            }
         }
     }
+
+    private val notifyLock = Any()
+    private var ended = false
 
     private fun foregroundInfo(notification: Notification): ForegroundInfo =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {

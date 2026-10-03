@@ -16,6 +16,8 @@ import android.provider.DocumentsContract
 import android.util.Log
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -45,6 +47,49 @@ class EmbeddingEngine(
     private var lastEmit: Long = 0L
     private var startTimeMs: Long = 0L
 
+    // How long this scan has spent waiting for the photos it handed over (see handOver).
+    @Volatile
+    private var pausedMs: Long = 0L
+
+    // Where indexing's time goes, for the performance logs (see BenchLog). Each
+    // report prints what has gathered since the last one and starts over.
+    private class ClipTiming {
+        // Filled in by the decode threads (several at once).
+        val decodeNs = AtomicLong()
+        val decoded = AtomicInteger()
+
+        // Filled in by the scan thread.
+        var waitDecodeNs = 0L
+        var inferNs = 0L
+        var writeNs = 0L
+        var images = 0
+        var chunks = 0
+        var startedAt = System.currentTimeMillis()
+        var pausedAtStart = 0L
+    }
+
+    @Volatile
+    private var clipTiming = ClipTiming()
+
+    private fun reportClip(reason: String) {
+        val t = clipTiming
+        clipTiming = ClipTiming().also { it.pausedAtStart = pausedMs }
+        if (t.images == 0) return
+        BenchLog.log(context) {
+            val wallMs = System.currentTimeMillis() - t.startedAt
+            val facesMs = pausedMs - t.pausedAtStart
+            val activeMs = (wallMs - facesMs).coerceAtLeast(1L)
+            fun ms(ns: Long, per: Int) = if (per <= 0) 0 else (ns / 1_000_000 / per).toInt()
+            val waiting = if (facesMs > 0) " (+${"%.1f".format(facesMs / 1000.0)}s waiting for faces)" else ""
+            "clip [$reason]: ${t.images} images in ${"%.1f".format(activeMs / 1000.0)}s = " +
+                "${"%.1f".format(t.images * 1000.0 / activeMs)}/s$waiting | per image: " +
+                "decode ${ms(t.decodeNs.get(), t.decoded.get())}ms (on $PREP_THREAD_COUNT threads), " +
+                "infer ${ms(t.inferNs, t.images)}ms, waited-on-decode ${ms(t.waitDecodeNs, t.images)}ms, " +
+                "index-write ${ms(t.writeNs, t.images)}ms | ${t.chunks} chunks of $INFERENCE_BATCH_SIZE | " +
+                BenchLog.device(context)
+        }
+    }
+
     @Volatile
     private var isCancelled = false
 
@@ -71,6 +116,11 @@ class EmbeddingEngine(
 
         // How many recently-embedded files to remember for the UI strip.
         private const val RECENT_WINDOW_SIZE = 10
+
+        // Performance logs (see BenchLog): a CLIP line every this many images, and a
+        // hand-over to the face scan is only worth its own line if it took this long.
+        private const val BENCH_REPORT_EVERY_IMAGES = 40
+        private const val BENCH_BATCH_MIN_MS = 1000L
 
         // Every image/frame's FloatArray is always exactly 3x224x224 - fixed
         // by ImagePreprocessor - so batching can rely on this instead of
@@ -146,7 +196,14 @@ class EmbeddingEngine(
         isCancelled = false
         startTimeMs = System.currentTimeMillis()
         lastEmit = startTimeMs
+        pausedMs = 0L
+        clipTiming = ClipTiming()
         recentItems.clear()
+        BenchLog.log(context) {
+            "scan start: mode=$mode contentMode=$contentMode cpus=${Runtime.getRuntime().availableProcessors()} " +
+                "clip=onnx(default threads) chunk=$INFERENCE_BATCH_SIZE decodeThreads=$PREP_THREAD_COUNT | " +
+                BenchLog.device(context)
+        }
         Log.d(TAG, "embedImages: start — mode=$mode contentMode=$contentMode")
 
         ensureModelsLoaded()
@@ -333,7 +390,11 @@ class EmbeddingEngine(
                 }
                 val futures = toEmbed.map { (img, _) ->
                     prepPool.submit(Callable {
-                        try { ImagePreprocessor.loadAsFloatArray(context, img.uri) } catch (e: Exception) { null }
+                        val decodeStartedNs = System.nanoTime()
+                        val prepared = try { ImagePreprocessor.loadAsFloatArray(context, img.uri) } catch (e: Exception) { null }
+                        clipTiming.decodeNs.addAndGet(System.nanoTime() - decodeStartedNs)
+                        clipTiming.decoded.incrementAndGet()
+                        prepared
                     })
                 }
                 return PendingChunk(toEmbed, futures)
@@ -364,6 +425,7 @@ class EmbeddingEngine(
 
                 val tensors = mutableListOf<FloatArray>()
                 val meta = mutableListOf<Pair<ImageSource, Long>>()
+                val waitStartedNs = System.nanoTime()
                 for ((idx, pair) in current.toEmbed.withIndex()) {
                     val tensor = try { current.futures[idx].get() } catch (e: Exception) { null }
                     if (tensor == null) {
@@ -375,8 +437,15 @@ class EmbeddingEngine(
                     }
                 }
 
+                clipTiming.waitDecodeNs += System.nanoTime() - waitStartedNs
+
                 if (tensors.isNotEmpty()) {
+                    val inferStartedNs = System.nanoTime()
                     val embeddings = runBatchedInference(vision, tensors)
+                    clipTiming.inferNs += System.nanoTime() - inferStartedNs
+                    clipTiming.images += tensors.size
+                    clipTiming.chunks++
+                    if (clipTiming.images >= BENCH_REPORT_EVERY_IMAGES) reportClip("periodic")
                     for ((idx, pair) in meta.withIndex()) {
                         val embedding = embeddings[idx]
                         if (embedding == null) {
@@ -401,8 +470,7 @@ class EmbeddingEngine(
                                 )
                             )
                             if (batch.size >= batchSize) {
-                                store.appendBatch(batch)
-                                batch.clear()
+                                commitBatch(batch)
                             }
                         }
                     }
@@ -413,8 +481,7 @@ class EmbeddingEngine(
             }
 
             if (isCancelled && batch.isNotEmpty()) {
-                store.appendBatch(batch)
-                batch.clear()
+                commitBatch(batch)
             }
         } finally {
             prepPool.shutdownNow()
@@ -428,7 +495,7 @@ class EmbeddingEngine(
             for (video in newVideos.shuffled()) {
 
                 if (isCancelled) {
-                    if (batch.isNotEmpty()) { store.appendBatch(batch); batch.clear() }
+                    if (batch.isNotEmpty()) commitBatch(batch)
                     break
                 }
 
@@ -461,8 +528,7 @@ class EmbeddingEngine(
                             )
 
                             if (batch.size >= batchSize) {
-                                store.appendBatch(batch)
-                                batch.clear()
+                                commitBatch(batch)
                             }
                         }
                     }
@@ -476,9 +542,15 @@ class EmbeddingEngine(
             }
         }
 
-        if (batch.isNotEmpty()) store.appendBatch(batch)
+        if (batch.isNotEmpty()) commitBatch(batch)
 
         val elapsed = System.currentTimeMillis() - startTimeMs
+        reportClip("scan end")
+        BenchLog.log(context) {
+            "scan end: $embedded embedded, $skipped skipped in ${"%.1f".format(elapsed / 1000.0)}s " +
+                "(${"%.1f".format(pausedMs / 1000.0)}s of it waiting for faces) | " +
+                BenchLog.device(context)
+        }
 
         onProgress(
             ScanProgress(
@@ -487,6 +559,7 @@ class EmbeddingEngine(
                 embedded = embedded,
                 skipped = skipped,
                 elapsedMs = elapsed,
+                activeMs = elapsed - pausedMs,
                 done = true,
                 path = label,
                 recentItems = recentItems.toList(),
@@ -495,6 +568,42 @@ class EmbeddingEngine(
         )
 
         return ScanResult(total, embedded, skipped)
+    }
+
+    // Writes a batch to the index and clears it, then offers the photos in it to
+    // whoever works alongside this scan (the face scan - videos are left out, it does
+    // those in its own later pass).
+    private fun commitBatch(batch: MutableList<EmbeddingRecord>) {
+        val writeStartedNs = System.nanoTime()
+        store.appendBatch(batch)
+        clipTiming.writeNs += System.nanoTime() - writeStartedNs
+        val photos = batch.filter { it.videoUri == null }.map { IndexedImage(it.hash, it.imagePath) }
+        batch.clear()
+        handOver(photos)
+    }
+
+    // The consumer may take a good while (finding the faces in a batch) - this scan
+    // simply waits, so the two don't compete. That time is counted so the speed shown
+    // for indexing is indexing's own (see ScanProgress.activeMs), and a failure over
+    // there never becomes this scan's.
+    private fun handOver(photos: List<IndexedImage>) {
+        val consumer = ScanHandoff.consumer ?: return
+        if (photos.isEmpty()) return
+        val startedAt = System.currentTimeMillis()
+        try {
+            consumer.onIndexed(photos) { isCancelled }
+        } catch (e: Exception) {
+            Log.w(TAG, "handOver: the consumer failed (${e.message})", e)
+        } catch (e: OutOfMemoryError) {
+            Log.w(TAG, "handOver: the consumer ran out of memory", e)
+        }
+        val tookMs = System.currentTimeMillis() - startedAt
+        pausedMs += tookMs
+        if (tookMs >= BENCH_BATCH_MIN_MS) {
+            BenchLog.log(context) { "handoff: indexing waited ${tookMs}ms for the faces of a batch" }
+            // What indexing did since the last line, ending right before that wait.
+            reportClip("before faces")
+        }
     }
 
     private fun embedVideoFile(
@@ -506,15 +615,18 @@ class EmbeddingEngine(
 
         val videoUriString = video.uri.toString()
 
+        val extractStartedNs = System.nanoTime()
         val frames = VideoFrameExtractor.extractFrames(
             context = context,
             uri = video.uri
         )
+        val extractNs = System.nanoTime() - extractStartedNs
 
         if (frames.isEmpty()) return emptyList()
 
         val tensors = mutableListOf<FloatArray>()
         val timestamps = mutableListOf<Long>()
+        val prepStartedNs = System.nanoTime()
 
         for ((timestampMs, bitmap) in frames) {
             try {
@@ -528,11 +640,17 @@ class EmbeddingEngine(
         }
 
         if (tensors.isEmpty()) return emptyList()
+        val prepNs = System.nanoTime() - prepStartedNs
 
         // All of a video's frames are already extracted by this point, so
         // one forward() call for all of them is a straightforward win - no
         // pipelining needed here, just batching.
+        val inferStartedNs = System.nanoTime()
         val embeddings = runBatchedInference(vision, tensors)
+        BenchLog.log(context) {
+            "clip video: ${tensors.size} frames | extract ${extractNs / 1_000_000}ms, " +
+                "preprocess ${prepNs / 1_000_000}ms, infer ${(System.nanoTime() - inferStartedNs) / 1_000_000}ms"
+        }
         val records = mutableListOf<EmbeddingRecord>()
 
         for (i in tensors.indices) {
@@ -1072,6 +1190,7 @@ class EmbeddingEngine(
                     embedded  = embedded,
                     skipped   = skipped,
                     elapsedMs = now - startTimeMs,
+                    activeMs  = now - startTimeMs - pausedMs,
                     done      = false,
                     path      = path,
                     failed    = failed,
