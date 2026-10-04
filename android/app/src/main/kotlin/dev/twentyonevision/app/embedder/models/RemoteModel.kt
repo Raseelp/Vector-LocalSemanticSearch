@@ -22,6 +22,12 @@ object ModelGroup {
 
     /** The face recognition model: only needed for the Faces tab. */
     const val FACES = "faces"
+
+    /**
+     * The optional fast face recognition model. Never part of setup: it is downloaded
+     * from the Face options, and sits next to the accurate one rather than replacing it.
+     */
+    const val FACES_FAST = "faces_fast"
 }
 
 object ModelCatalog {
@@ -59,7 +65,25 @@ object ModelCatalog {
         )
     )
 
-    val ALL: List<RemoteModel> = MODELS + FACE_MODELS
+    // The small, fast face recognition model (MobileFaceNet, InsightFace w600k_mbf, taken
+    // from the buffalo_s pack; its output shape is declared with a flexible batch size so
+    // several faces can be recognised in one run). Optional and kept apart from
+    // FACE_MODELS on purpose: setup downloads only the accurate model, and the two can
+    // be on the device together - the Face options choose which one runs. Same folder,
+    // so the face pipeline finds it with the other.
+    val FACE_MODELS_FAST: List<RemoteModel> = listOf(
+        RemoteModel(
+            id = "face_recognition_fast",
+            fileName = "w600k_mbf.onnx",
+            url = "${BuildConfig.MODEL_BASE_URL}/w600k_mbf.onnx",
+            sha256 = "81ffd4b788d5c2cb5d9bf25056b7e793bf64322d7796eceff9db6c0272a0e998",
+            sizeBytes = 13613018L,
+            group = ModelGroup.FACES_FAST,
+            folder = "face_models"
+        )
+    )
+
+    val ALL: List<RemoteModel> = MODELS + FACE_MODELS + FACE_MODELS_FAST
 
     fun forGroups(groups: Collection<String>): List<RemoteModel> = ALL.filter { it.group in groups }
 

@@ -112,8 +112,11 @@ class ModelManager(private val context: Context) {
     /** Deletes the CLIP models (search and indexing stop until they are downloaded again). */
     fun deleteModels() = delete(ModelCatalog.MODELS)
 
-    /** Deletes the face recognition model only; search is unaffected. */
-    fun deleteFaceModels() = delete(ModelCatalog.FACE_MODELS)
+    /** Deletes the face recognition models (the accurate and the fast one); search is unaffected. */
+    fun deleteFaceModels() = delete(ModelCatalog.FACE_MODELS + ModelCatalog.FACE_MODELS_FAST)
+
+    /** Deletes the fast face recognition model only. */
+    fun deleteFastFaceModel() = delete(ModelCatalog.FACE_MODELS_FAST)
 
     private fun delete(models: List<RemoteModel>) {
         for (m in models) {

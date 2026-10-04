@@ -32,6 +32,7 @@ class FaceScanWorker(context: Context, params: WorkerParameters) : CoroutineWork
 
     override suspend fun doWork(): Result {
         FaceScanHub.running = true
+        notificationDismissed = false
         createChannelIfNeeded()
 
         try {
@@ -49,7 +50,7 @@ class FaceScanWorker(context: Context, params: WorkerParameters) : CoroutineWork
                     val now = System.currentTimeMillis()
                     if (now - lastNotified < NOTIFY_INTERVAL_MS && status["done"] != true) return@run
                     lastNotified = now
-                    if (isStopped) return@run
+                    if (isStopped || notificationDismissed) return@run
                     val processed = (status["processed"] as? Int) ?: 0
                     val total = (status["total"] as? Int) ?: 0
                     val paused = status["paused"] == true
@@ -133,6 +134,12 @@ class FaceScanWorker(context: Context, params: WorkerParameters) : CoroutineWork
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setProgress(100, percent, total <= 0)
             .setContentIntent(pending)
+            .setDeleteIntent(
+                dev.twentyonevision.app.embedder.NotificationDismissReceiver.pending(
+                    applicationContext,
+                    dev.twentyonevision.app.embedder.NotificationDismissReceiver.WHICH_FACES,
+                )
+            )
             .build()
     }
 
@@ -154,6 +161,10 @@ class FaceScanWorker(context: Context, params: WorkerParameters) : CoroutineWork
         const val NOTIFICATION_ID = 4202
         const val UNIQUE_WORK_NAME = "face_scan"
         private const val NOTIFY_INTERVAL_MS = 2000L
+
+        // The user swiped the face scan's notification away: not posted again this run.
+        @Volatile
+        var notificationDismissed: Boolean = false
 
         /**
          * Starts the face scan if there is something for it to do and it isn't

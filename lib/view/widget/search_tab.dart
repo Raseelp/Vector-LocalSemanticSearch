@@ -78,11 +78,9 @@ class SearchTab extends StatelessWidget {
                   _CollectionChipRow(onSeeAll: onSeeAllCollections),
                   _PeopleRow(
                     onSeeAll: () {
-                      // Same as tapping the People tab: show it, refreshed, with the scan going.
+                      // Same as tapping the People tab: show it, refreshed.
                       controller.setHomeTab(3);
-                      final faces = Get.find<FacesController>();
-                      faces.refreshAll();
-                      faces.startScan();
+                      Get.find<FacesController>().refreshAll();
                     },
                   ),
                   _SearchIdlePrompt(controller: controller),

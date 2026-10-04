@@ -36,6 +36,72 @@ data class FaceModelSpec(
     val rgb: Boolean,
 )
 
+/**
+ * What is known about particular recognition models, beyond what their file says.
+ * More than one can be on the device at a time (only one runs at a time, chosen in the
+ * Face options); each has its own tuning (see [FaceTuner]) and its own similarity scale.
+ */
+object FaceModelProfiles {
+    /** The accurate model: used unless another one was chosen, whatever else is installed. */
+    const val ACCURATE_EMBEDDER = "w600k_r50"
+
+    /** The small, fast model (MobileFaceNet, trained on the same data as the accurate one). */
+    const val FAST_EMBEDDER = "w600k_mbf"
+
+    fun displayName(id: String): String? = when (id) {
+        ACCURATE_EMBEDDER -> "Accurate (ResNet-50)"
+        FAST_EMBEDDER -> "Fast (MobileFaceNet)"
+        else -> null
+    }
+
+    /**
+     * How far to move the grouping thresholds (see [FaceClusterConfig]) for this model.
+     * Models do not all put the same person at the same similarity: a small network
+     * scores the same person lower, so its thresholds sit lower too. No change for the
+     * accurate model, which they were set for.
+     */
+    fun clusterOffsets(id: String?): ClusterOffsets = when (id?.removePrefix(".bundled_")) {
+        FAST_EMBEDDER -> FAST_OFFSETS
+        else -> ClusterOffsets.NONE
+    }
+
+    // Measured against the accurate model on ~4,400 faces of ~1,400 people (LFW), found and
+    // aligned by this app's own detector: the threshold giving the same false-match rate as
+    // the accurate model's, per threshold -
+    //   0.20 -> +0.025   0.30 -> +0.018   0.36 -> -0.011   0.39 -> -0.035   0.42 -> -0.057
+    //   (link 0.52 -> -0.096, merge 0.54 -> -0.087 from the first, smaller run)
+    // so the fast model's scale differs by a different amount at each level: the low
+    // thresholds that suggest merges hardly move, the high ones that join people move a lot.
+    // The weak-face threshold keeps its gap above join (low-quality faces can't be measured
+    // on that set). Both models separate people equally well there (94% of same-person pairs
+    // found at a 0.1% false-match rate). The suggestion thresholds are kept a little tighter
+    // than equal, since a wrong suggestion costs more than a missing one. To be confirmed on
+    // real phone photos.
+    private val FAST_OFFSETS = ClusterOffsets(
+        join = -0.055f, weakJoin = -0.08f, merge = -0.09f, link = -0.095f,
+        prefilter = 0f, suggestTop3 = 0f, suggestBest = -0.025f,
+    )
+}
+
+/**
+ * How far each grouping threshold moves for a recognition model: the four of [FaceClusterConfig],
+ * then the looser checks that suggest merges (the cheap pre-filter, and the two the three best
+ * matching faces and the single best pair must reach).
+ */
+class ClusterOffsets(
+    val join: Float,
+    val weakJoin: Float,
+    val merge: Float,
+    val link: Float,
+    val prefilter: Float,
+    val suggestTop3: Float,
+    val suggestBest: Float,
+) {
+    companion object {
+        val NONE = ClusterOffsets(0f, 0f, 0f, 0f, 0f, 0f, 0f)
+    }
+}
+
 /** A model file found somewhere on the device, with its resolved settings. */
 data class LocatedFaceModel(
     val spec: FaceModelSpec,
@@ -72,7 +138,12 @@ class FaceModelStore(private val context: Context) {
     fun selected(kind: FaceModelKind): LocatedFaceModel? {
         val models = available(kind)
         val chosen = prefs.getString(prefKey(kind), null)
-        return models.firstOrNull { it.spec.id == chosen } ?: models.firstOrNull()
+        // With nothing chosen, the accurate recognition model - not whichever file sorts
+        // first, or installing a second model would quietly switch to it and regroup.
+        val preferred = if (kind == FaceModelKind.EMBEDDER) FaceModelProfiles.ACCURATE_EMBEDDER else null
+        return models.firstOrNull { it.spec.id == chosen }
+            ?: models.firstOrNull { it.spec.id == preferred }
+            ?: models.firstOrNull()
     }
 
     fun select(kind: FaceModelKind, id: String) {
@@ -191,7 +262,8 @@ class FaceModelStore(private val context: Context) {
         return FaceModelSpec(
             id = id,
             kind = kind,
-            displayName = json?.optString("name")?.takeIf { it.isNotBlank() } ?: id,
+            displayName = json?.optString("name")?.takeIf { it.isNotBlank() }
+                ?: FaceModelProfiles.displayName(id) ?: id,
             inputSize = json?.optInt("inputSize", 0)?.takeIf { it > 0 } ?: if (detector) 640 else 112,
             mean = json?.optDouble("mean", Double.NaN)?.takeIf { !it.isNaN() }?.toFloat() ?: 127.5f,
             std = json?.optDouble("std", Double.NaN)?.takeIf { !it.isNaN() }?.toFloat()

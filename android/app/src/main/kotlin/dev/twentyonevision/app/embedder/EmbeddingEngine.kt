@@ -158,6 +158,9 @@ class EmbeddingEngine(
         }
     }
 
+    /** True if the last scan was stopped by the user rather than running to its end. */
+    fun wasCancelled(): Boolean = isCancelled
+
     fun cancelEmbedding() {
         isCancelled = true
     }

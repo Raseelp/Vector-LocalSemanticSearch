@@ -1243,9 +1243,8 @@ class MainActivity : FlutterActivity() {
                 "setFaceSettings" -> faceTask(result) {
                     call.argument<Boolean>("thorough")?.let { FaceSettings.setThorough(applicationContext, it) }
                     call.argument<Boolean>("refine")?.let {
+                        // Only a setting: the face scan never starts by itself (see FaceScanWorker).
                         FaceSettings.setRefine(applicationContext, it)
-                        // Turning it on has work to do right away.
-                        if (it) FaceScanWorker.enqueueIfNeeded(applicationContext)
                     }
                     call.argument<String>("strictness")?.let {
                         if (it in listOf(FaceClusterConfig.STRICT, FaceClusterConfig.BALANCED, FaceClusterConfig.LOOSE)) {
@@ -1255,8 +1254,6 @@ class MainActivity : FlutterActivity() {
                     call.argument<String>("videoDensity")?.let { FaceSettings.setVideoDensity(applicationContext, it) }
                     call.argument<Boolean>("scanVideos")?.let {
                         FaceSettings.setScanVideos(applicationContext, it)
-                        // Turning it on has work to do right away.
-                        if (it) FaceScanWorker.enqueueIfNeeded(applicationContext)
                     }
                     true
                 }
@@ -1284,6 +1281,7 @@ class MainActivity : FlutterActivity() {
                     val kind = call.argument<String>("kind") ?: throw IllegalArgumentException("kind required")
                     val id = call.argument<String>("id") ?: throw IllegalArgumentException("id required")
                     // A running scan must not carry on with the other model.
+                    FaceFollower.stop()
                     WorkManager.getInstance(applicationContext).cancelUniqueWork(FaceScanWorker.UNIQUE_WORK_NAME)
                     FaceSettings.setPaused(applicationContext, false)
                     faces.engine.store.select(FaceModelKind.valueOf(kind.uppercase()), id)
@@ -1606,7 +1604,23 @@ class MainActivity : FlutterActivity() {
                 // replacement: instead of asking to not be killed, the
                 // scan now survives being killed.
                 "getActiveScanProgress" -> {
-                    result.success(ScanForegroundService.activeProgress())
+                    // A scan that is running but has not reported yet (WorkManager starts one again
+                    // by itself after the app was killed): say it is starting, so the app shows it
+                    // instead of offering to start another.
+                    result.success(
+                        ScanForegroundService.activeProgress()
+                            ?: if (ScanForegroundService.isScanActive) mapOf(
+                                "id" to "",
+                                "total" to 0,
+                                "processed" to 0,
+                                "embedded" to 0,
+                                "elapsedMs" to 0L,
+                                "skipped" to 0,
+                                "done" to false,
+                                "path" to "",
+                                "recentItems" to emptyList<Map<String, Any>>(),
+                            ) else null
+                    )
                 }
 
                 else -> result.notImplemented()

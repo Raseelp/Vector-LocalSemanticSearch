@@ -80,10 +80,15 @@ object ScanForegroundService {
     // Posting and taking down the notification never overlap (see onScanEnded).
     private val notifyLock = Any()
 
+    // The user swiped this scan's notification away: it is not posted again for the rest
+    // of the scan (the scan itself carries on), or it would pop straight back up.
+    @Volatile
+    var notificationDismissed: Boolean = false
+
     /** Posts the scan's notification - unless the scan is already over. */
     fun postIfActive(context: Context, notification: Notification) {
         synchronized(notifyLock) {
-            if (!isScanActive) return
+            if (!isScanActive || notificationDismissed) return
             try {
                 androidx.core.app.NotificationManagerCompat.from(context.applicationContext)
                     .notify(NOTIFICATION_ID, notification)
@@ -151,6 +156,7 @@ object ScanForegroundService {
     // and acquires the wake lock.
     fun onScanStarting(context: Context) {
         isScanActive = true
+        notificationDismissed = false
         faceSnapshot = null
         lastSnapshot = null
         previousSnapshot = null
@@ -328,6 +334,7 @@ object ScanForegroundService {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setProgress(100, barPercent, barIndeterminate)
             .setContentIntent(contentIntent(context))
+            .setDeleteIntent(NotificationDismissReceiver.pending(context, NotificationDismissReceiver.WHICH_SCAN))
             .build()
     }
 

@@ -181,11 +181,9 @@ class _HomeScreenState extends State<HomeScreen> {
                               final faces = Get.find<FacesController>();
                               if (faces.selecting) faces.stopSelecting();
                             }
-                            // Opening Faces: refresh, and make sure the scan is going.
+                            // Opening Faces: refresh. (Looking never starts a scan.)
                             if (i == _tabFaces) {
-                              final faces = Get.find<FacesController>();
-                              faces.refreshAll();
-                              faces.startScan();
+                              Get.find<FacesController>().refreshAll();
                             }
                             // Search opens ready to type - once the tab is
                             // actually showing (it's offstage until then).

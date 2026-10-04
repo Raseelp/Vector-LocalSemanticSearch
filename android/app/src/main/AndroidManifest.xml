@@ -70,6 +70,11 @@
             </intent-filter>
         </activity>
 
+        <!-- Hears that a scan's notification was swiped away, so it is not put back. -->
+        <receiver
+            android:name=".embedder.NotificationDismissReceiver"
+            android:exported="false" />
+
         <!-- SAF Folder Picker Activity (NOT launcher) -->
         <activity
             android:name=".SafPickerActivity"

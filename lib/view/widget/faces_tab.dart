@@ -117,7 +117,10 @@ class FacesTab extends StatelessWidget {
                         duration: const Duration(milliseconds: 220),
                         switchInCurve: Curves.easeOutCubic,
                         switchOutCurve: Curves.easeInCubic,
-                        child: faces.syncing && status.error == null
+                        // Also while face search is stopped by the user (with photos left, or
+                        // while indexing runs): otherwise nothing would show it, or let it resume.
+                        child: (faces.syncing || status.userPaused) &&
+                                status.error == null
                             ? FaceSyncPill(
                                 key: const ValueKey('pill'),
                                 status: status,

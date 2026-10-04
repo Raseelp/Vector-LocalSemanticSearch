@@ -212,7 +212,7 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                 fun ms(ns: Long, per: Int) = if (per == 0) 0 else (ns / 1_000_000 / per).toInt()
                 "faces [$label]: $photos photos in ${"%.1f".format(wall / 1000.0)}s = " +
                     "${"%.1f".format(photos * 1000.0 / max(wall, 1L))}/s | per photo: wall ${wall / photos}ms = " +
-                    "decode ${ms(decodeNs, photos)}ms (1 thread, runs ahead), " +
+                    "decode ${ms(decodeNs, photos)}ms ($DECODE_THREADS threads, run ahead), " +
                     "waited-on-decoder ${ms(waitNs, photos)}ms, detect ${ms(detectNs, photos)}ms, " +
                     "align ${ms(alignNs, photos)}ms, recognise ${ms(embedNs, photos)}ms, db ${ms(dbNs, photos)}ms | " +
                     "faces/photo ${"%.1f".format(faces.toFloat() / photos)}, " +
@@ -786,8 +786,14 @@ class FaceScanner(private val context: Context, private val services: FaceServic
             val cancelled = AtomicBoolean(false)
             val queue = ArrayBlockingQueue<Any>(PREFETCH)
             val end = Any()
-            val producer = Thread({ produce(pending, thorough, queue, cancelled, end) }, "face-decode")
-            producer.start()
+            // Several decoders take the photos in turn, so decoding keeps up with detection
+            // (the photos reach the analysis in whatever order they finish).
+            val nextIndex = AtomicInteger(0)
+            val decodersLeft = AtomicInteger(DECODE_THREADS)
+            val producers = List(DECODE_THREADS) { n ->
+                Thread({ produce(pending, thorough, queue, cancelled, end, nextIndex, decodersLeft) }, "face-decode-$n")
+                    .also { it.start() }
+            }
             val stage = RecognitionStage()
             recognition = stage
 
@@ -848,7 +854,7 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                     val left = queue.poll() ?: break
                     (left as? Prepared)?.photo?.bitmap?.recycle()
                 }
-                producer.join(3000)
+                for (producer in producers) producer.join(3000)
             }
             return true
         }
@@ -1269,11 +1275,16 @@ class FaceScanner(private val context: Context, private val services: FaceServic
         queue: ArrayBlockingQueue<Any>,
         cancelled: AtomicBoolean,
         end: Any,
+        nextIndex: AtomicInteger,
+        decodersLeft: AtomicInteger,
     ) {
         try {
             val side = if (thorough) REF_SIDE else SCAN_SIDE
-            for (item in pending) {
+            while (true) {
                 if (cancelled.get()) return
+                val index = nextIndex.getAndIncrement()
+                if (index >= pending.size) break
+                val item = pending[index]
                 val decodeStartedNs = System.nanoTime()
                 val photo = try {
                     FaceImageLoader.loadWithInfo(context, Uri.parse(item.uri), side, allowSlightlySmaller = true)
@@ -1292,8 +1303,11 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                     }
                 }
             }
-            while (!queue.offer(end, 300, TimeUnit.MILLISECONDS)) {
-                if (cancelled.get()) return
+            // Whoever finishes last says there is no more (everyone else's photos are queued already).
+            if (decodersLeft.decrementAndGet() == 0) {
+                while (!queue.offer(end, 300, TimeUnit.MILLISECONDS)) {
+                    if (cancelled.get()) return
+                }
             }
         } catch (_: InterruptedException) {
         }
@@ -1301,7 +1315,8 @@ class FaceScanner(private val context: Context, private val services: FaceServic
 
     companion object {
         private const val TAG = "FaceScanner"
-        private const val META_MODEL_KEY = "model_key"
+        // "detector|recogniser" of the models the stored faces came from (read by FaceClusterer too).
+        const val META_MODEL_KEY = "model_key"
 
         /** The size a photo is decoded to: detection only ever sees 640px, and faces are cut from this. */
         const val SCAN_SIDE = 2048
@@ -1322,6 +1337,10 @@ class FaceScanner(private val context: Context, private val services: FaceServic
         private const val REFINE_PHOTOS_PER_ROUND = 24
         private const val MAX_CONSECUTIVE_FAILURES = 20
         private const val PREFETCH = 2
+
+        // Photos decoded at the same time. One decoder fell behind once recognition got
+        // quick: decoding a photo (~0.4-0.9 s) took nearly as long as analysing it.
+        private const val DECODE_THREADS = 2
         private const val EMIT_INTERVAL_MS = 800L
         private const val STATS_INTERVAL_MS = 3000L
         private const val PAUSE_POLL_MS = 1500L

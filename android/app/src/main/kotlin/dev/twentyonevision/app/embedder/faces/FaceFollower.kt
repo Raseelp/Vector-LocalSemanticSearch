@@ -68,10 +68,19 @@ object FaceFollower {
         synchronized(lock) {
             if (armed) return true
             val app = context.applicationContext
-            if (!open || !ScanForegroundService.isScanActive) return false
-            if (FaceSettings.paused(app)) return false
+            if (!open || !ScanForegroundService.isScanActive) {
+                BenchLog.log(app) { "faces not in step with indexing: no indexing scan is open for it (open=$open)" }
+                return false
+            }
+            if (FaceSettings.paused(app)) {
+                BenchLog.log(app) { "faces not in step with indexing: face search is stopped (resume it in People)" }
+                return false
+            }
             val services = FaceServices.get(app)
-            if (!services.engine.isReady()) return false
+            if (!services.engine.isReady()) {
+                BenchLog.log(app) { "faces not in step with indexing: the face models are not ready" }
+                return false
+            }
 
             // A face worker still working through an earlier scan's leftovers would hold
             // the face scan: stop it (it is resumable, and starts again once indexing ends).

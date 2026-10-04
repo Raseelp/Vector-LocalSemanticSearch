@@ -12,16 +12,26 @@ import kotlin.math.sqrt
  * one match several of the other at [link] or better. Weak faces need
  * [weakJoin]. Stricter means fewer wrong merges but more people split in two.
  */
-class FaceClusterConfig(val join: Float, val weakJoin: Float, val merge: Float, val link: Float) {
+class FaceClusterConfig(
+    val join: Float,
+    val weakJoin: Float,
+    val merge: Float,
+    val link: Float,
+    // How far the looser checks that suggest merges move for the recognition model in use;
+    // the four above already include their own offsets - see FaceModelProfiles.
+    val prefilterShift: Float = 0f,
+    val suggestTop3Shift: Float = 0f,
+    val suggestBestShift: Float = 0f,
+) {
     companion object {
         const val STRICT = "strict"
         const val BALANCED = "balanced"
         const val LOOSE = "loose"
 
-        fun forStrictness(name: String?): FaceClusterConfig = when (name) {
-            STRICT -> FaceClusterConfig(join = 0.50f, weakJoin = 0.56f, merge = 0.62f, link = 0.60f)
-            LOOSE -> FaceClusterConfig(join = 0.36f, weakJoin = 0.42f, merge = 0.48f, link = 0.46f)
-            else -> FaceClusterConfig(join = 0.42f, weakJoin = 0.48f, merge = 0.54f, link = 0.52f)
+        fun forStrictness(name: String?, o: ClusterOffsets = ClusterOffsets.NONE): FaceClusterConfig = when (name) {
+            STRICT -> FaceClusterConfig(0.50f + o.join, 0.56f + o.weakJoin, 0.62f + o.merge, 0.60f + o.link, o.prefilter, o.suggestTop3, o.suggestBest)
+            LOOSE -> FaceClusterConfig(0.36f + o.join, 0.42f + o.weakJoin, 0.48f + o.merge, 0.46f + o.link, o.prefilter, o.suggestTop3, o.suggestBest)
+            else -> FaceClusterConfig(0.42f + o.join, 0.48f + o.weakJoin, 0.54f + o.merge, 0.52f + o.link, o.prefilter, o.suggestTop3, o.suggestBest)
         }
     }
 }
@@ -249,8 +259,15 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
     // long clip of one person must not outweigh a lifetime of photos.
     private val videoUses = HashMap<Pair<Long, Long>, Int>()
 
+    // The thresholds for the strictness chosen and for the recognition model the faces
+    // were made by (the stored model key is "detector|recogniser").
     private val config: FaceClusterConfig
-        get() = FaceClusterConfig.forStrictness(store.getMeta(META_STRICTNESS))
+        get() = FaceClusterConfig.forStrictness(store.getMeta(META_STRICTNESS), modelOffsets())
+
+    private fun modelOffsets(): ClusterOffsets {
+        val recogniser = store.getMeta(FaceScanner.META_MODEL_KEY)?.substringAfter('|', "")
+        return FaceModelProfiles.clusterOffsets(recogniser)
+    }
 
     fun strictness(): String = store.getMeta(META_STRICTNESS) ?: FaceClusterConfig.BALANCED
 
@@ -469,7 +486,7 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
 
                 // Cheap first: unrelated people are nowhere near each other.
                 val centroidSim = protoSim(a, b)
-                if (centroidSim < PREFILTER) continue
+                if (centroidSim < PREFILTER + cfg.prefilterShift) continue
                 if (sharesPhoto(a, b)) continue
 
                 val strong = centroidSim >= cfg.merge || run {
@@ -505,6 +522,7 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
      */
     fun suggestMerges(limit: Int): List<MergeSuggestion> = synchronized(lock) {
         val state = state()
+        val cfg = config
         val rejected = store.rejectedPairs()
         val hidden = store.allPeople().filter { it.hidden }.map { it.id }.toSet()
         val listed = state.values.filter {
@@ -519,14 +537,14 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
                 if (a.named && b.named) continue // the user already told these apart
                 if (a.centroid.size != b.centroid.size) continue
                 if ((minOf(a.id, b.id) to maxOf(a.id, b.id)) in rejected) continue
-                if (protoSim(a, b) < PREFILTER) continue
+                if (protoSim(a, b) < PREFILTER + cfg.prefilterShift) continue
                 if (sharesPhoto(a, b)) continue
 
                 // Both must hold: several faces of one match several of the other
                 // (not a lone lucky pair - look-alikes, and drawings or cartoons,
                 // produce those), and the closest pair is clearly alike.
                 val l = link(a, b) ?: continue
-                if (l.pairs < 3 || l.top3 < SUGGEST_TOP3 || l.best < SUGGEST_BEST) continue
+                if (l.pairs < 3 || l.top3 < SUGGEST_TOP3 + cfg.suggestTop3Shift || l.best < SUGGEST_BEST + cfg.suggestBestShift) continue
                 out += MergeSuggestion(a.id, b.id, l.top3)
             }
         }

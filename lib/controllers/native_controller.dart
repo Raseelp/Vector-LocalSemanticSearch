@@ -379,6 +379,16 @@ class NativeController extends GetxController with WidgetsBindingObserver {
       modelStatuses.where((m) => m.group == 'search').toList();
   List<ModelStatus> get _faceModels =>
       modelStatuses.where((m) => m.group == 'faces').toList();
+  List<ModelStatus> get _fastFaceModels =>
+      modelStatuses.where((m) => m.group == 'faces_fast').toList();
+
+  /// Size of the optional fast face recognition model.
+  int get fastFaceModelBytes =>
+      _fastFaceModels.fold<int>(0, (sum, m) => sum + m.sizeBytes);
+
+  /// True once the optional fast face recognition model was downloaded.
+  bool get fastFaceModelVerified =>
+      _fastFaceModels.isNotEmpty && _fastFaceModels.every((m) => m.verified);
 
   /// Size of the search (CLIP) models together.
   int get searchModelBytes =>
@@ -428,10 +438,16 @@ class NativeController extends GetxController with WidgetsBindingObserver {
 
   /// Downloads the models that aren't on the device yet: the search models,
   /// then the face recognition model ([onlyFaces] for just the latter).
-  Future<void> startModelDownload({bool onlyFaces = false}) async {
+  /// [fastFaceModel] downloads only the optional fast face recognition model.
+  Future<void> startModelDownload({
+    bool onlyFaces = false,
+    bool fastFaceModel = false,
+  }) async {
     if (isDownloadingModels) return;
 
-    final groups = <String>[if (!onlyFaces) 'search', 'faces'];
+    final groups = fastFaceModel
+        ? <String>['faces_fast']
+        : <String>[if (!onlyFaces) 'search', 'faces'];
 
     isDownloadingModels = true;
     downloadError = '';
@@ -1035,10 +1051,9 @@ class NativeController extends GetxController with WidgetsBindingObserver {
         // errored one reports total 0.
         final completed =
             scanResult.total > 0 && scanResult.processed >= scanResult.total;
-        // New photos are in the index now - the face scan picks them up.
-        if (Get.isRegistered<FacesController>()) {
-          unawaited(Get.find<FacesController>().startScan());
-        }
+        // Faces were found along with this scan, and what it left for the face worker is
+        // started natively when the scan runs to its end - a scan the user stopped does not
+        // start one, so nothing is asked of the face scan from here.
         if (completed) {
           scanSummary = ScanSummary(
             total: scanResult.total,

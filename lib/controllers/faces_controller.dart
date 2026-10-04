@@ -28,7 +28,8 @@ class FacesController extends GetxController {
   void onInit() {
     super.onInit();
     _progressSub = _native.faceProgress().listen(_onProgress, onError: (_) {});
-    refreshAll().then((_) => startScan());
+    // Faces are found along with indexing (or by "Sync faces"): opening the app never starts a scan.
+    refreshAll();
   }
 
   @override
@@ -73,11 +74,10 @@ class FacesController extends GetxController {
     return true;
   }
 
-  /// The face recognition model was downloaded or removed: look again, and
-  /// start the scan if there is now something it can do.
+  /// The face recognition model was downloaded or removed: look again. The scan is not
+  /// started here - it runs with the next indexing, or from "Sync faces".
   Future<void> onFaceModelChanged() async {
     await refreshAll();
-    await startScan();
   }
 
   /// The user's stop button. Stays stopped, across restarts, until [resumeScan].

@@ -8,8 +8,11 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import dev.twentyonevision.app.embedder.faces.FaceFollower
 import dev.twentyonevision.app.embedder.faces.FaceScanWorker
+import dev.twentyonevision.app.embedder.faces.FaceSettings
 
 // Runs the scan as WorkManager work, not a plain executor thread inside a
 // Service this app manages itself. The actual embedding logic
@@ -29,6 +32,22 @@ class ScanWorker(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
+        // One scan at a time. A second one starting (the user stopped and started again, or
+        // WorkManager replaced this work) used to run alongside the first, because
+        // WorkManager's cancel does not stop a scan: two scans, each reporting its own
+        // progress, which flickered between their two counts. So the one still running is
+        // asked to stop, and this one waits until it has - everything it keeps in step
+        // (the notification, the face scan, the wake lock) is then never shared.
+        //
+        // From this moment the scan still winding down is no longer the current one: whatever
+        // it reports on its way out (above all its final "done" tick, which the app takes to
+        // mean the scan the user just started has finished) is dropped.
+        val thisRun = latestRun.incrementAndGet()
+        ScanEngineHolder.embeddingEngine(applicationContext).cancelEmbedding()
+        return scanMutex.withLock { runScan(thisRun) }
+    }
+
+    private suspend fun runScan(thisRun: Int): Result {
         val mode = inputData.getString(KEY_MODE) ?: "folder"
         val uri = inputData.getString(KEY_URI)
         val folderId = inputData.getString(KEY_FOLDER_ID) ?: "default"
@@ -50,11 +69,23 @@ class ScanWorker(
         // progress of both shows in this scan's one notification. A videos-only scan
         // has no photos to find faces in.
         return try {
+            // Starting an indexing scan is asking for the faces to be found along with it: a
+            // "stop face search" left over from earlier (it is remembered across launches, and
+            // nothing on screen shows it) must not quietly keep them out.
+            FaceSettings.setPaused(applicationContext, false)
             FaceFollower.openForScan()
             if (contentMode != "videos") FaceFollower.start(applicationContext)
 
             val embeddingEngine = ScanEngineHolder.embeddingEngine(applicationContext)
             embeddingEngine.embedImages(mode, uri, folderId, contentMode) { progress ->
+                // WorkManager stopped this work (replaced, or stopped by the system): stop the
+                // scan too - it is resumable, so a restart carries on from where it got to.
+                if (isStopped) embeddingEngine.cancelEmbedding()
+                // A newer scan was asked for: this one is only on its way out.
+                if (thisRun != latestRun.get()) {
+                    embeddingEngine.cancelEmbedding()
+                    return@embedImages
+                }
                 val map = mapOf(
                     "id" to folderId,
                     "total" to progress.total,
@@ -90,7 +121,8 @@ class ScanWorker(
             // refining pass, videos) to the face worker.
             FaceFollower.closeForScan()
             FaceFollower.finish()
-            FaceScanWorker.enqueueIfNeeded(applicationContext)
+            // Only when indexing ran to its end: a scan the user stopped stops the faces with it.
+            if (!embeddingEngine.wasCancelled()) FaceScanWorker.enqueueIfNeeded(applicationContext)
             Result.success()
         } catch (e: Exception) {
             // embedImages already catches per-file problems internally
@@ -103,7 +135,7 @@ class ScanWorker(
             // back on anymore now that scanImagesAndOrVideos returns as
             // soon as the work is enqueued, not when it finishes.
             Log.e(TAG, "doWork: embedImages failed: ${e.message}", e)
-            ScanForegroundService.pushProgress(
+            if (thisRun == latestRun.get()) ScanForegroundService.pushProgress(
                 mapOf(
                     "id" to folderId,
                     "total" to 0,
@@ -156,5 +188,11 @@ class ScanWorker(
         const val KEY_FOLDER_ID = "folderId"
         const val KEY_CONTENT_MODE = "contentMode"
         const val UNIQUE_WORK_NAME = "scan"
+
+        // Held for the whole of a scan (see doWork).
+        private val scanMutex = Mutex()
+
+        // Counts the scans asked for; only the latest one reports progress.
+        private val latestRun = java.util.concurrent.atomic.AtomicInteger(0)
     }
 }

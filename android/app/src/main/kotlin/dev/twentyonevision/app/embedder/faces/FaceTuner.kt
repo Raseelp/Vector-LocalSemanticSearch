@@ -51,7 +51,9 @@ object FaceTuner {
     private const val PREFS = "face_tuning"
 
     // Bump to make every phone retune after this logic changes.
-    private const val VERSION = 1
+    // 3: back to trying the alternative backends on the recognition model only (version 2 also
+    // tried XNNPACK on the detector, which crashed the app; the retune clears what it left).
+    private const val VERSION = 3
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -180,6 +182,9 @@ object FaceTuner {
         if (big.size in 2..4) {
             attempt(RunConfig(big.size, big.drop(1).joinToString(";")))
         }
+        // Only the recognition model: XNNPACK on the detector aborts the whole app while the
+        // session is being created on at least one real phone (SIGABRT inside ONNX Runtime -
+        // it cannot be caught, and each try costs a crash), so it is never tried there.
         if (isEmbedder) {
             attempt(RunConfig(bestCpu.threads, provider = "xnnpack"))
             attempt(RunConfig(bestCpu.threads, provider = "nnapi"))
