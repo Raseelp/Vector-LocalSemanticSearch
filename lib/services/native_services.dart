@@ -754,12 +754,6 @@ class NativeServices {
     return await _channel.invokeMethod<bool>('areModelsReady') ?? false;
   }
 
-  /// Everything the app needs is on the device: the search models and the
-  /// face recognition model.
-  Future<bool> areAllModelsReady() async {
-    return await _channel.invokeMethod<bool>('areAllModelsReady') ?? false;
-  }
-
   Future<List<ModelStatus>> getModelInfo() async {
     final results = await _channel.invokeMethod<List<dynamic>>('getModelInfo');
     return (results ?? [])
@@ -771,15 +765,11 @@ class NativeServices {
   /// Progress is reported via [modelDownloadProgressStream]; this only
   /// resolves once the download finishes or fails.
   ///
-  /// [groups] picks what to download: 'search' (the CLIP models, the
-  /// default) and/or 'faces' (the face recognition model). The result says
-  /// whether everything asked for is now on the device.
-  Future<bool> downloadModels({List<String> groups = const ['search']}) async {
+  /// Downloads the search (CLIP) models - the only ones that are downloaded. The
+  /// result says whether they are now on the device.
+  Future<bool> downloadModels() async {
     try {
-      return await _channel.invokeMethod<bool>('downloadModels', {
-            'groups': groups,
-          }) ??
-          false;
+      return await _channel.invokeMethod<bool>('downloadModels') ?? false;
     } on PlatformException catch (e) {
       debugPrint('downloadModels failed: ${e.code} ${e.message}');
       rethrow;
@@ -790,7 +780,7 @@ class NativeServices {
     await _channel.invokeMethod('cancelModelDownload');
   }
 
-  /// Deletes every model - the search models and the face recognition model.
+  /// Deletes the downloaded (search) models; the face models are part of the app.
   Future<void> deleteModels() async {
     await _channel.invokeMethod('deleteModels');
   }

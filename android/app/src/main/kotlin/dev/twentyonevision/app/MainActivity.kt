@@ -41,7 +41,6 @@ import dev.twentyonevision.app.embedder.faces.PhotoScanProgress
 import dev.twentyonevision.app.embedder.faces.FaceTuner
 import dev.twentyonevision.app.embedder.faces.FaceSettings
 import dev.twentyonevision.app.embedder.models.ModelCatalog
-import dev.twentyonevision.app.embedder.models.ModelGroup
 import dev.twentyonevision.app.embedder.models.ModelManager
 import dev.twentyonevision.app.embedder.models.ModelsNotReadyException
 
@@ -256,16 +255,6 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
-                // Everything the app needs is on the device: the search models and
-                // the face recognition model (downloaded, or placed there by hand).
-                "areAllModelsReady" -> {
-                    executor.execute {
-                        val ready = modelManager.areModelsReady() &&
-                            (ModelCatalog.FACE_MODELS.all { modelManager.isModelVerified(it) } || faces.engine.isReady())
-                        runOnUiThread { result.success(ready) }
-                    }
-                }
-
                 "getModelInfo" -> {
                     executor.execute {
                         val statuses = modelManager.getModelStatuses().map {
@@ -283,10 +272,9 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "downloadModels" -> {
-                    // Which models: "search" (the CLIP pair, the default) and/or
-                    // "faces" (the face recognition model), searched first.
-                    val groups = call.argument<List<String>>("groups") ?: listOf(ModelGroup.SEARCH)
-                    val requested = ModelCatalog.forGroups(groups)
+                    // The search (CLIP) models - the only ones downloaded; the face models
+                    // are bundled in the app.
+                    val requested = ModelCatalog.MODELS
                     executor.execute {
                         if (requested.all { modelManager.isModelVerified(it) }) {
                             runOnUiThread { result.success(true) }
@@ -337,14 +325,11 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
 
-                // Deletes every model (search and face recognition). People already
-                // found and the search index are kept; everything that needs a model
-                // waits until they are downloaded again.
+                // Deletes the downloaded (search) models. People already found and the
+                // search index are kept; search and indexing wait until the models are
+                // downloaded again. The face models are part of the app and stay.
                 "deleteModels" -> faceTask(result) {
-                    WorkManager.getInstance(applicationContext).cancelUniqueWork(FaceScanWorker.UNIQUE_WORK_NAME)
                     modelManager.deleteModels()
-                    modelManager.deleteFaceModels()
-                    faces.engine.reloadSessions()
                     true
                 }
 

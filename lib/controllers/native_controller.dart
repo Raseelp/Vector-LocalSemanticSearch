@@ -327,12 +327,9 @@ class NativeController extends GetxController with WidgetsBindingObserver {
 
   List<IndexedFolder> allIndexedFoldersList = [];
 
-  // Search (CLIP) models ready.
+  // Search (CLIP) models ready - the only ones downloaded (the face models are part of
+  // the app). The setup screen shows until this is true.
   bool modelsReady = false;
-
-  // Everything needed to use the app is ready: the search models AND the face
-  // recognition model. The setup screen shows until this is true.
-  bool allModelsReady = false;
   bool isCheckingModels = true;
   List<ModelStatus> modelStatuses = [];
   bool isDownloadingModels = false;
@@ -377,40 +374,19 @@ class NativeController extends GetxController with WidgetsBindingObserver {
 
   List<ModelStatus> get _searchModels =>
       modelStatuses.where((m) => m.group == 'search').toList();
-  List<ModelStatus> get _faceModels =>
-      modelStatuses.where((m) => m.group == 'faces').toList();
-  List<ModelStatus> get _fastFaceModels =>
-      modelStatuses.where((m) => m.group == 'faces_fast').toList();
-
-  /// Size of the optional fast face recognition model.
-  int get fastFaceModelBytes =>
-      _fastFaceModels.fold<int>(0, (sum, m) => sum + m.sizeBytes);
-
-  /// True once the optional fast face recognition model was downloaded.
-  bool get fastFaceModelVerified =>
-      _fastFaceModels.isNotEmpty && _fastFaceModels.every((m) => m.verified);
 
   /// Size of the search (CLIP) models together.
   int get searchModelBytes =>
       _searchModels.fold<int>(0, (sum, m) => sum + m.sizeBytes);
 
-  /// Size of the face recognition model.
-  int get faceModelBytes =>
-      _faceModels.fold<int>(0, (sum, m) => sum + m.sizeBytes);
-
   /// True once the search models are downloaded and verified.
   bool get searchModelsVerified =>
       _searchModels.isNotEmpty && _searchModels.every((m) => m.verified);
-
-  /// True if the face recognition model was downloaded (not merely found on the device).
-  bool get faceModelVerified =>
-      _faceModels.isNotEmpty && _faceModels.every((m) => m.verified);
 
   /// What the setup screen's button would download right now (whatever isn't there yet).
   int get pendingDownloadBytes {
     var total = 0;
     if (!searchModelsVerified) total += searchModelBytes;
-    if (!faceModelVerified) total += faceModelBytes;
     return total;
   }
 
@@ -427,7 +403,6 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     final wasReady = modelsReady;
     try {
       modelsReady = await NativeServices().areModelsReady();
-      allModelsReady = await NativeServices().areAllModelsReady();
       modelStatuses = await NativeServices().getModelInfo();
     } finally {
       isCheckingModels = false;
@@ -436,18 +411,9 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     if (!wasReady && modelsReady) unawaited(_modelsBecameReady());
   }
 
-  /// Downloads the models that aren't on the device yet: the search models,
-  /// then the face recognition model ([onlyFaces] for just the latter).
-  /// [fastFaceModel] downloads only the optional fast face recognition model.
-  Future<void> startModelDownload({
-    bool onlyFaces = false,
-    bool fastFaceModel = false,
-  }) async {
+  /// Downloads the search models if they aren't on the device yet.
+  Future<void> startModelDownload() async {
     if (isDownloadingModels) return;
-
-    final groups = fastFaceModel
-        ? <String>['faces_fast']
-        : <String>[if (!onlyFaces) 'search', 'faces'];
 
     isDownloadingModels = true;
     downloadError = '';
@@ -466,7 +432,7 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     });
 
     try {
-      await NativeServices().downloadModels(groups: groups);
+      await NativeServices().downloadModels();
     } on PlatformException catch (e) {
       downloadError = e.message ?? e.code;
     } catch (e) {
@@ -474,22 +440,16 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     } finally {
       await _downloadSub?.cancel();
       _downloadSub = null;
-      // What is really on the device, whatever happened (cancelled, or the search
-      // models done and the face model failed): the setup screen goes by this.
+      // What is really on the device, whatever happened (cancelled, or failed): the
+      // setup screen goes by this.
       final wasReady = modelsReady;
       try {
         modelsReady = await NativeServices().areModelsReady();
-        allModelsReady = await NativeServices().areAllModelsReady();
         modelStatuses = await NativeServices().getModelInfo();
       } catch (_) {}
       isDownloadingModels = false;
       update();
       if (!wasReady && modelsReady) unawaited(_modelsBecameReady());
-
-      // A new face model means the face scan can start.
-      if (faceModelVerified && Get.isRegistered<FacesController>()) {
-        unawaited(Get.find<FacesController>().onFaceModelChanged());
-      }
     }
   }
 
@@ -497,14 +457,12 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     await NativeServices().cancelModelDownload();
   }
 
-  /// Deletes every model. The app then falls back to the setup screen (see AppGate).
+  /// Deletes the downloaded (search) models. The app then falls back to the setup screen
+  /// (see AppGate); the face models are part of the app and stay.
   Future<void> deleteModels() async {
     await NativeServices().deleteModels();
     downloadError = '';
     await checkModelsReady();
-    if (Get.isRegistered<FacesController>()) {
-      unawaited(Get.find<FacesController>().onFaceModelChanged());
-    }
   }
 
   // Just picks and previews - doesn't search. Mirrors typing text: nothing
@@ -780,7 +738,6 @@ class NativeController extends GetxController with WidgetsBindingObserver {
       }
     } on ModelsNotReadyError {
       modelsReady = false;
-      allModelsReady = false;
       error = 'Models are not downloaded yet.';
     } finally {
       isSearching = false;
@@ -987,7 +944,6 @@ class NativeController extends GetxController with WidgetsBindingObserver {
       );
     } on ModelsNotReadyError {
       modelsReady = false;
-      allModelsReady = false;
       error = 'Models are not downloaded yet.';
       result = null;
     }

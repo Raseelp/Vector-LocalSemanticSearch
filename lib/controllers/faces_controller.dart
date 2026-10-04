@@ -74,12 +74,6 @@ class FacesController extends GetxController {
     return true;
   }
 
-  /// The face recognition model was downloaded or removed: look again. The scan is not
-  /// started here - it runs with the next indexing, or from "Sync faces".
-  Future<void> onFaceModelChanged() async {
-    await refreshAll();
-  }
-
   /// The user's stop button. Stays stopped, across restarts, until [resumeScan].
   Future<void> pauseScan() async {
     status = status.withUserPaused(true);

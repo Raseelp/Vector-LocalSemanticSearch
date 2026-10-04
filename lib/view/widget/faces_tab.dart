@@ -88,17 +88,7 @@ class FacesTab extends StatelessWidget {
             // Faces are found along with indexing, so this is only a quiet way to
             // catch up on anything that was missed. Pressing it turns the button into
             // a small progress pill, and back when the scan is over.
-            if (noModel)
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(
-                  AppSpacing.xl,
-                  AppSpacing.sm,
-                  AppSpacing.xl,
-                  0,
-                ),
-                sliver: const SliverToBoxAdapter(child: NoFaceModelCard()),
-              )
-            else
+            if (!noModel)
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(
                   AppSpacing.lg,

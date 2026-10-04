@@ -24,8 +24,8 @@ class AppGate extends StatelessWidget {
           );
         }
 
-        // Both the search models and the face recognition model.
-        if (!controller.allModelsReady) {
+        // The search models are the only ones downloaded.
+        if (!controller.modelsReady) {
           return const ModelDownloadScreen();
         }
 

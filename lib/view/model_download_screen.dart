@@ -12,8 +12,6 @@ String friendlyModelName(String fileName) {
     case 'clip_vision.onnx':
     case 'clip_text.onnx':
       return 'Search';
-    case 'w600k_r50.onnx':
-      return 'People';
     default:
       return fileName;
   }
@@ -55,8 +53,8 @@ class ModelDownloadScreen extends StatelessWidget {
                             ),
                             const SizedBox(height: AppSpacing.sm),
                             Text(
-                              'Two small AI models that run on your phone. '
-                              'Download once, then it all works offline.',
+                              'An AI model that runs on your phone. '
+                              'Download once, then search works offline.',
                               textAlign: TextAlign.center,
                               style: textTheme.bodyMedium?.copyWith(color: AppColors.ink48, height: 1.45),
                             ),
@@ -74,14 +72,6 @@ class ModelDownloadScreen extends StatelessWidget {
                                     benefit: 'Find any photo by describing it',
                                     sizeBytes: controller.searchModelBytes,
                                     done: controller.searchModelsVerified,
-                                  ),
-                                  const Divider(height: 1, indent: 68, color: AppColors.hairline),
-                                  _ModelRow(
-                                    icon: Icons.face_retouching_natural,
-                                    title: 'People',
-                                    benefit: 'Photos grouped by who is in them',
-                                    sizeBytes: controller.faceModelBytes,
-                                    done: controller.faceModelVerified,
                                   ),
                                 ],
                               ),

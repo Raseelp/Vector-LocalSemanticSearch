@@ -24,6 +24,21 @@ class ModelManager(private val context: Context) {
 
     init {
         cleanupLegacyPyTorchModels()
+        cleanupLegacyFaceModels()
+    }
+
+    // The face recognition model is bundled in the app now (see FaceModelStore), not
+    // downloaded: remove what earlier versions downloaded - the accurate model (170 MB) and
+    // the downloaded copy of the small one - and forget that they were verified. (A model
+    // someone put in the external folder by hand is theirs: only the old accurate model's
+    // files are removed from there.)
+    private fun cleanupLegacyFaceModels() {
+        val old = listOf("w600k_r50.onnx", "w600k_r50.onnx.part", "w600k_r50.json")
+        val downloadedCopyOfBundled = listOf("w600k_mbf.onnx", "w600k_mbf.onnx.part")
+        File(context.filesDir, "face_models").let { dir -> (old + downloadedCopyOfBundled).forEach { File(dir, it).delete() } }
+        context.getExternalFilesDir("face_models")?.let { dir -> old.forEach { File(dir, it).delete() } }
+        val stale = prefs.all.keys.filter { it.startsWith("verified_face_recognition") }
+        if (stale.isNotEmpty()) prefs.edit().apply { stale.forEach { remove(it) } }.apply()
     }
 
     // One-time migration cleanup: the CLIP models moved from TorchScript
@@ -48,12 +63,9 @@ class ModelManager(private val context: Context) {
         private const val FREE_SPACE_MULTIPLIER = 1.3
     }
 
-    fun localFile(model: RemoteModel): File {
-        val dir = model.folder?.let { File(context.filesDir, it).also { d -> d.mkdirs() } } ?: context.filesDir
-        return File(dir, model.fileName)
-    }
+    fun localFile(model: RemoteModel): File = File(context.filesDir, model.fileName)
 
-    private fun partFile(model: RemoteModel): File = File(localFile(model).parentFile, "${model.fileName}.part")
+    private fun partFile(model: RemoteModel): File = File(context.filesDir, "${model.fileName}.part")
 
     private fun verifiedKey(model: RemoteModel) = "verified_${model.id}_${model.sha256}"
 
@@ -112,28 +124,11 @@ class ModelManager(private val context: Context) {
     /** Deletes the CLIP models (search and indexing stop until they are downloaded again). */
     fun deleteModels() = delete(ModelCatalog.MODELS)
 
-    /** Deletes the face recognition models (the accurate and the fast one); search is unaffected. */
-    fun deleteFaceModels() = delete(ModelCatalog.FACE_MODELS + ModelCatalog.FACE_MODELS_FAST)
-
-    /** Deletes the fast face recognition model only. */
-    fun deleteFastFaceModel() = delete(ModelCatalog.FACE_MODELS_FAST)
-
     private fun delete(models: List<RemoteModel>) {
         for (m in models) {
             localFile(m).delete()
             partFile(m).delete()
             prefs.edit().remove(verifiedKey(m)).apply()
-
-            // A copy of a face model placed by hand in the app's external folder
-            // (where the face pipeline also looks) would keep the app thinking the
-            // model is still there - so "delete the models" removes that too.
-            if (m.folder != null) {
-                val external = context.getExternalFilesDir(m.folder)
-                if (external != null) {
-                    File(external, m.fileName).delete()
-                    File(external, m.fileName.substringBeforeLast('.') + ".json").delete()
-                }
-            }
         }
     }
 

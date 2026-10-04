@@ -3,13 +3,10 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:twentyonevision/controllers/faces_controller.dart';
-import 'package:twentyonevision/controllers/native_controller.dart';
-import 'package:twentyonevision/models/model_status.dart';
 import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
-import 'package:twentyonevision/view/model_download_screen.dart';
 import 'package:twentyonevision/view/widget/confirm_dialog.dart';
 
 /// A face picture, cut from its photo on demand (see FacesController.crop).
@@ -305,86 +302,6 @@ class FaceSyncPill extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-/// Shown when the face recognition model isn't on the device: what it is, why
-/// it is needed, and the download - same model system as the search models.
-class NoFaceModelCard extends StatelessWidget {
-  const NoFaceModelCard({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final textTheme = Theme.of(context).textTheme;
-
-    return GetBuilder<NativeController>(
-      builder: (native) {
-        final size = native.faceModelBytes;
-        final downloading = native.isDownloadingModels;
-        final progress = native.downloadProgress;
-
-        return Container(
-          padding: const EdgeInsets.all(AppSpacing.base),
-          decoration: BoxDecoration(
-            color: AppColors.parchment,
-            borderRadius: BorderRadius.circular(AppRadius.lg),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.face_retouching_natural, size: 20, color: AppColors.primary),
-                  const SizedBox(width: AppSpacing.sm),
-                  Expanded(child: Text('Turn on People', style: textTheme.titleSmall)),
-                ],
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              Text(
-                'Grouping photos by who is in them needs a small face recognition model, '
-                'downloaded once${size > 0 ? ' (${ModelDownloadProgress.formatBytes(size)})' : ''}. '
-                'It runs entirely on this phone: nothing is uploaded, and it works offline afterwards.',
-                style: textTheme.bodySmall?.copyWith(color: AppColors.ink80, height: 1.45),
-              ),
-              if (native.downloadError.isNotEmpty) ...[
-                const SizedBox(height: AppSpacing.sm),
-                Text(
-                  native.downloadError,
-                  style: textTheme.bodySmall?.copyWith(color: AppColors.danger, fontWeight: FontWeight.w600),
-                ),
-              ],
-              const SizedBox(height: AppSpacing.md),
-              if (downloading) ...[
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(AppRadius.pill),
-                  child: LinearProgressIndicator(
-                    minHeight: 6,
-                    value: progress.overallTotalBytes == 0 ? null : progress.overallFraction,
-                    backgroundColor: AppColors.hairline,
-                    color: AppColors.primary,
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.xs),
-                Text(
-                  progress.overallTotalBytes == 0
-                      ? 'Starting...'
-                      : '${ModelDownloadProgress.formatBytes(progress.overallBytesDownloaded)} '
-                          'of ${ModelDownloadProgress.formatBytes(progress.overallTotalBytes)}',
-                  style: textTheme.bodySmall?.copyWith(color: AppColors.ink48),
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                PillButton(label: 'Cancel', onTap: native.cancelModelDownload, outlined: true),
-              ] else
-                PillButton(
-                  label: native.downloadError.isEmpty ? 'Download' : 'Retry download',
-                  icon: native.downloadError.isEmpty ? Icons.download_rounded : Icons.refresh_rounded,
-                  onTap: () => native.startModelDownload(onlyFaces: true),
-                ),
-            ],
-          ),
-        );
-      },
     );
   }
 }

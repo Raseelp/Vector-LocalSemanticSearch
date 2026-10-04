@@ -5,7 +5,7 @@ class ModelStatus {
   final bool downloaded;
   final bool verified;
 
-  // 'search' (the CLIP models) or 'faces' (the face recognition model).
+  // What the model is for ('search': the CLIP models).
   final String group;
 
   const ModelStatus({

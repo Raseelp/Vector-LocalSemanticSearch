@@ -122,7 +122,7 @@ class FaceServices private constructor(context: Context) {
  *     the people pass 1 built. Never starts a person, so it can't add noise.
  *
  * Where the time goes, and what is done about it:
- *  - Recognition (a ResNet per face) is by far the heaviest step, so it only
+ *  - Recognition (a network run per face) is a heavy step, so it only
  *    runs on faces that matter, in batches that span photos, and with settings
  *    found by timing the model on this phone (see FaceTuner).
  *  - One decode per photo, done on a second thread ahead of the analysis.
@@ -474,8 +474,8 @@ class FaceScanner(private val context: Context, private val services: FaceServic
     }
 
     // Earlier builds listed the bundled detector's unpacked copy as its own model,
-    // so stored keys look like ".bundled_det_2.5g|w600k_r50". That is the same
-    // model as "det_2.5g|w600k_r50" - not a reason to throw the people away.
+    // so stored keys look like ".bundled_det_2.5g|w600k_mbf". That is the same
+    // model as "det_2.5g|w600k_mbf" - not a reason to throw the people away.
     private fun sameModels(stored: String?, current: String?): Boolean =
         stored != null && current != null && stored.replace(".bundled_", "") == current
 
@@ -1315,8 +1315,7 @@ class FaceScanner(private val context: Context, private val services: FaceServic
 
     companion object {
         private const val TAG = "FaceScanner"
-        // "detector|recogniser" of the models the stored faces came from (read by FaceClusterer too).
-        const val META_MODEL_KEY = "model_key"
+        private const val META_MODEL_KEY = "model_key"
 
         /** The size a photo is decoded to: detection only ever sees 640px, and faces are cut from this. */
         const val SCAN_SIDE = 2048

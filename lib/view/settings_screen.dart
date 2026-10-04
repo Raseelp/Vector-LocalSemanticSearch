@@ -5,7 +5,6 @@ import 'package:twentyonevision/controllers/collections_controller.dart';
 import 'package:twentyonevision/controllers/faces_controller.dart';
 import 'package:twentyonevision/controllers/native_controller.dart';
 import 'package:twentyonevision/models/model_status.dart';
-import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
@@ -23,12 +22,10 @@ class SettingsScreen extends StatelessWidget {
         final hasEmbeddings =
             controller.totalEmbeddings > 0 ||
             controller.allIndexedFoldersList.isNotEmpty;
-        // Everything a delete would free: the search models plus the downloaded face model.
-        final deletableBytes =
-            (controller.searchModelsVerified
-                ? controller.searchModelBytes
-                : 0) +
-            (controller.faceModelVerified ? controller.faceModelBytes : 0);
+        // What a delete would free: the downloaded (search) models.
+        final deletableBytes = controller.searchModelsVerified
+            ? controller.searchModelBytes
+            : 0;
 
         return Scaffold(
           backgroundColor: AppColors.canvas,
@@ -79,33 +76,18 @@ class SettingsScreen extends StatelessWidget {
                               size: 18,
                             ),
                           ),
-                          GetBuilder<FacesController>(
-                            builder: (faces) {
-                              // Ready also covers a model placed on the device by hand.
-                              final ready = faces.status.ready;
-                              final size = ModelDownloadProgress.formatBytes(
-                                controller.faceModelBytes,
-                              );
-                              return _SettingsRow(
-                                icon: ready
-                                    ? Icons.verified_outlined
-                                    : Icons.face_retouching_natural_outlined,
-                                accentIcon: ready,
-                                title: 'Face recognition',
-                                subtitle: ready
-                                    ? 'Groups photos by person  ·  $size  ·  on this device'
-                                    : 'Not downloaded  ·  $size',
-                                trailing: ready
-                                    ? const Icon(
-                                        Icons.check_circle_rounded,
-                                        color: AppColors.primary,
-                                        size: 18,
-                                      )
-                                    : null,
-                              );
-                            },
+                          const _SettingsRow(
+                            icon: Icons.verified_outlined,
+                            accentIcon: true,
+                            title: 'Face recognition',
+                            subtitle:
+                                'Groups photos by person  ·  about 13 MB  ·  built in',
+                            trailing: Icon(
+                              Icons.check_circle_rounded,
+                              color: AppColors.primary,
+                              size: 18,
+                            ),
                           ),
-                          const _FaceModelChoice(),
                         ],
                       ),
                       Padding(
@@ -178,12 +160,12 @@ class SettingsScreen extends StatelessWidget {
                             _DangerRow(
                               title: 'Delete AI models',
                               subtitle:
-                                  'Frees ~${ModelDownloadProgress.formatBytes(deletableBytes)} - both the search and face recognition models',
+                                  'Frees ~${ModelDownloadProgress.formatBytes(deletableBytes)} - the search model',
                               onTap: () => showConfirmDialog(
                                 context,
                                 title: 'Delete AI models?',
                                 message:
-                                    'Search, indexing and People stop working until you download the models again - you will be taken back to the setup screen. Your photos, the search index and the people already found are kept.',
+                                    'Search and indexing stop working until you download the search model again - you will be taken back to the setup screen. Your photos, the search index and the people already found are kept.',
                                 confirmLabel: 'Delete',
                                 onConfirm: () {
                                   controller.deleteModels().then((_) {
@@ -249,195 +231,6 @@ class SettingsScreen extends StatelessWidget {
           ),
         );
       },
-    );
-  }
-}
-
-/// Which model tells people apart: the accurate one (default) or the small, fast one. Both
-/// can be on the phone; only the chosen one runs. Switching regroups every face.
-class _FaceModelChoice extends StatefulWidget {
-  const _FaceModelChoice();
-
-  @override
-  State<_FaceModelChoice> createState() => _FaceModelChoiceState();
-}
-
-class _FaceModelChoiceState extends State<_FaceModelChoice> {
-  static const _accurateId = 'w600k_r50';
-  static const _fastId = 'w600k_mbf';
-
-  List<FaceModelInfo>? _installed;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    try {
-      final models = await Get.find<FacesController>().models();
-      if (mounted) setState(() => _installed = models.ofKind('embedder'));
-    } catch (_) {
-      if (mounted) setState(() => _installed = const []);
-    }
-  }
-
-  Future<void> _switchTo(FaceModelInfo model) async {
-    await Get.find<FacesController>().selectModel(model);
-    await _load();
-  }
-
-  void _confirmSwitch(FaceModelInfo model) {
-    showConfirmDialog(
-      context,
-      title: 'Switch to ${model.name}?',
-      message:
-          'Every face is recognised again with this model, so the groups and the names you gave will be removed '
-          'and rebuilt. The photos are only searched once more. Switching back does the same.',
-      confirmLabel: 'Switch',
-      confirmColor: AppColors.primary,
-      onConfirm: () => _switchTo(model),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final installed = _installed;
-    // Nothing to choose between until a recognition model is on the phone.
-    if (installed == null || installed.isEmpty) return const SizedBox.shrink();
-    final native = Get.find<NativeController>();
-
-    return GetBuilder<NativeController>(
-      builder: (_) {
-        FaceModelInfo? fast;
-        final others = <FaceModelInfo>[];
-        for (final m in installed) {
-          if (m.id == _fastId) {
-            fast = m;
-          } else {
-            others.add(m);
-          }
-        }
-        final downloading = native.isDownloadingModels;
-        String mb(int bytes) => ModelDownloadProgress.formatBytes(bytes);
-        const fastBlurb = 'Much smaller and quicker, a little less exact';
-
-        final rows = <Widget>[
-          for (final m in others)
-            _ModelChoiceRow(
-              title: m.name,
-              subtitle: m.id == _accurateId
-                  ? 'Best at telling similar faces apart  ·  ${mb(m.sizeBytes)}'
-                  : mb(m.sizeBytes),
-              selected: m.selected,
-              onTap: m.selected ? null : () => _confirmSwitch(m),
-            ),
-          if (fast != null)
-            _ModelChoiceRow(
-              title: fast.name,
-              subtitle: '$fastBlurb  ·  ${mb(fast.sizeBytes)}',
-              selected: fast.selected,
-              onTap: fast.selected ? null : () => _confirmSwitch(fast!),
-            )
-          else
-            _ModelChoiceRow(
-              title: 'Fast (MobileFaceNet)',
-              subtitle: downloading
-                  ? 'Downloading  ·  ${(native.downloadProgress.overallFraction * 100).floor()}%'
-                  : '$fastBlurb  ·  ${mb(native.fastFaceModelBytes)} download',
-              selected: false,
-              onTap: downloading
-                  ? null
-                  : () async {
-                      await native.startModelDownload(fastFaceModel: true);
-                      await _load();
-                    },
-              trailing: downloading
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(
-                      Icons.download_rounded,
-                      size: 18,
-                      color: AppColors.ink48,
-                    ),
-            ),
-        ];
-
-        return Column(
-          children: [
-            for (int i = 0; i < rows.length; i++) ...[
-              if (i > 0) const Divider(height: 1, color: AppColors.dividerSoft),
-              rows[i],
-            ],
-          ],
-        );
-      },
-    );
-  }
-}
-
-class _ModelChoiceRow extends StatelessWidget {
-  const _ModelChoiceRow({
-    required this.title,
-    required this.subtitle,
-    required this.selected,
-    required this.onTap,
-    this.trailing,
-  });
-
-  final String title;
-  final String subtitle;
-  final bool selected;
-  final VoidCallback? onTap;
-  final Widget? trailing;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.base,
-          vertical: AppSpacing.md,
-        ),
-        child: Row(
-          children: [
-            Icon(
-              selected
-                  ? Icons.radio_button_checked_rounded
-                  : Icons.radio_button_off_rounded,
-              size: 18,
-              color: selected ? AppColors.primary : AppColors.ink48,
-            ),
-            const SizedBox(width: AppSpacing.md),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      color: selected ? AppColors.primary : null,
-                    ),
-                  ),
-                  const SizedBox(height: 1),
-                  Text(
-                    subtitle,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodySmall?.copyWith(color: AppColors.ink48),
-                  ),
-                ],
-              ),
-            ),
-            if (trailing != null) trailing!,
-          ],
-        ),
-      ),
     );
   }
 }

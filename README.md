@@ -25,12 +25,14 @@ index and the face recognition are built and used entirely on your phone.
 ### People (face recognition)
 
 A background scan finds and recognises the faces in your photos and groups
-them into people. It starts by itself, can be paused and resumed, and shows
-its progress (speed and time left) while people appear as they are found.
+them into people. It runs along with indexing (every so many photos Vector
+finds their faces before it carries on), or from **Sync faces** on the People
+tab; it never starts by itself. It can be paused and resumed, and people appear
+as they are found.
 
 - **Detect → align → recognise → group.** A small detector (SCRFD) finds
-  faces, each is straightened, and a recognition model (ArcFace, `w600k_r50`)
-  turns it into a 512-number fingerprint. Faces are grouped by comparing
+  faces, each is straightened, and a small recognition model (MobileFaceNet,
+  `w600k_mbf`, ~13 MB) turns it into a 512-number fingerprint. Faces are grouped by comparing
   fingerprints. Blurry, tiny or turned-away faces never start a person; they
   can only join one that already exists.
 - **Faces tab.** A grid of the people found, most photographed first. Open a
@@ -91,17 +93,19 @@ Android only, for now (minimum Android 7.0 / API 24).
 
 ## Building it yourself
 
-Two sets of model weights are downloaded once on first launch — neither is
+One set of model weights is downloaded once on first launch — it is not
 bundled in the app or the repo:
 
 - **Search** — the CLIP weights (~575 MB).
-- **People** — the face recognition model (~166 MB). The small face detector
-  (SCRFD, ~3 MB) is bundled with the app.
 
-The setup screen downloads both with one button, with speed, time left and
-resume. Both can be removed again from Settings, which returns you to the
-setup screen. See [model_host/README.md](model_host/README.md) for testing the
-download flow locally (including the face model's checksum and how it is
+The face models are part of the app (in `android/app/src/main/assets/`): the
+face detector (SCRFD, ~3 MB) and the face recognition model (MobileFaceNet,
+~13 MB).
+
+The setup screen downloads the search models with one button, with speed, time
+left and resume. They can be removed again from Settings, which returns you to
+the setup screen. See [model_host/README.md](model_host/README.md) for testing
+the download flow locally (including the checksums and how they are
 published), or `android/app/build.gradle.kts` for where the release build
 points to.
 
