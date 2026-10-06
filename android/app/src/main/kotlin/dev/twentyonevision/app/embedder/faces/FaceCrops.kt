@@ -98,6 +98,7 @@ class FaceCrops(private val context: Context, private val store: FaceStore) {
 
     companion object {
         const val DEFAULT_SIZE = 256
+
         private const val FALLBACK_SIDE = 1600
         private const val MIN_SIDE = 640
         private const val MAX_SIDE = 2560

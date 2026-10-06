@@ -501,7 +501,7 @@ class FaceScanner(private val context: Context, private val services: FaceServic
         // True while this run belongs to an indexing scan (see Session), and while it is
         // working through one of the batches that scan handed over.
         var following = false
-        var batchActive = false
+        @Volatile var batchActive = false
         // Bumped by whichever thread stores a photo (see commit), read when reporting.
         @Volatile var processed = 0
         var total = 0
@@ -512,13 +512,24 @@ class FaceScanner(private val context: Context, private val services: FaceServic
         // Both stages of a pass (see RecognitionStage) count into this.
         val consecutiveFailures = AtomicInteger(0)
 
+        // The faces stored most recently, newest first, with what the app's square draws of
+        // them: the photo each was found in, where the face and its landmarks are on it (as
+        // fractions of the photo), and who it was placed with. Only while a batch of an
+        // indexing scan is being worked through, and starting over with each.
+        @Volatile var recentFaceEvents: List<Map<String, Any?>> = emptyList()
+
+        // Set when new faces were stored: the next emit() goes out at once, so they are
+        // shown without waiting for the usual interval.
+        @Volatile var newFaces = false
+
         // Photos whose clear faces are waiting for a recognition batch.
         val jobs = ArrayList<Job>()
         var pendingFaces = 0
 
         fun emit(paused: Boolean = false, done: Boolean = false, error: String? = null, force: Boolean = false) {
             val now = SystemClock.elapsedRealtime()
-            if (!force && !done && now - lastEmitAt < EMIT_INTERVAL_MS) return
+            if (!force && !done && !newFaces && now - lastEmitAt < EMIT_INTERVAL_MS) return
+            newFaces = false
             lastEmitAt = now
             // The totals are a few queries over the whole table - not needed every tick.
             if (force || done || now - lastStatsAt > STATS_INTERVAL_MS) {
@@ -538,6 +549,7 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                 "faces" to stats.second,
                 "people" to stats.third,
                 "failed" to attempt.failed,
+                "recentFaceEvents" to recentFaceEvents,
                 // A video takes far longer than a photo, so its time-left comes from videos only.
                 "runProcessed" to (if (phase == "videos") videosDone else attempt.processed),
                 "elapsedMs" to (if (phase == "videos") now - videosStartedAt else now - startedAt),
@@ -627,6 +639,7 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                 processed = 0
                 total = photos.size
                 timing = Timing()
+                recentFaceEvents = emptyList()
                 logConfigOnce()
                 BenchLog.log(context) {
                     "faces batch start: ${photos.size} just-indexed photos | ${BenchLog.device(context)}"
@@ -939,7 +952,10 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                 } else {
                     jobs += job
                     pendingFaces += job.toRecognise
-                    if (pendingFaces >= FLUSH_AT) flush()
+                    // The first faces of a follow batch go off as soon as there are a couple, so the
+                    // first of them can be shown within a photo or two; after that, in full batches.
+                    val flushAt = if (batchActive && recentFaceEvents.isEmpty()) FIRST_FLUSH_AT else FLUSH_AT
+                    if (pendingFaces >= flushAt) flush()
                 }
             } catch (e: Exception) {
                 // A model/runtime problem, not the photo's fault: not recorded, so
@@ -1157,10 +1173,45 @@ class FaceScanner(private val context: Context, private val services: FaceServic
                     embedding = f.embedding ?: FloatArray(0),
                 )
             }
+            val ids = try {
+                store.insertPhoto(job.item.hash, job.item.uri, job.width, job.height, rows)
+            } catch (e: Exception) {
+                job.faces.forEach { it.aligned?.recycle(); it.aligned = null }
+                throw e
+            }
+            val placed = try {
+                clusterer.assignPhotoFaces(job.item.hash, ids, rows)
+            } catch (e: Exception) {
+                job.faces.forEach { it.aligned?.recycle(); it.aligned = null }
+                throw e
+            }
+            // The recognised faces of a photo, for the app's square (while a batch of an
+            // indexing scan is on).
+            if (batchActive) {
+                val events = ArrayList<Map<String, Any?>>()
+                for ((i, f) in job.faces.withIndex()) {
+                    val id = ids.getOrNull(i) ?: continue
+                    if (f.good && f.embedding != null) {
+                        val row = rows[i]
+                        val person = placed.getOrNull(i)
+                        events += mapOf(
+                            "id" to id,
+                            "photo" to job.item.uri,
+                            "box" to listOf(row.boxL, row.boxT, row.boxR, row.boxB),
+                            "landmarks" to row.landmarks.toList(),
+                            "score" to row.score,
+                            "person" to person?.personId,
+                            "isNew" to (person?.isNew ?: false),
+                            "photos" to (person?.photos ?: 1),
+                        )
+                    }
+                }
+                if (events.isNotEmpty()) {
+                    recentFaceEvents = (events.asReversed() + recentFaceEvents).take(RECENT_FACES)
+                    newFaces = true
+                }
+            }
             job.faces.forEach { it.aligned?.recycle(); it.aligned = null }
-
-            val ids = store.insertPhoto(job.item.hash, job.item.uri, job.width, job.height, rows)
-            clusterer.assignPhotoFaces(job.item.hash, ids, rows)
             // Every face in it recognised (a photo with few faces, or one scanned from the viewer).
             if (job.faces.all { it.embedding != null }) store.markPhotoComplete(job.item.hash)
             processed++
@@ -1329,9 +1380,15 @@ class FaceScanner(private val context: Context, private val services: FaceServic
         /** Faces waiting for recognition are sent to the model once this many have gathered. */
         private const val FLUSH_AT = 8
 
+        /** The first flush of a follow batch (see processPhotos). */
+        private const val FIRST_FLUSH_AT = 2
+
         // Batches the detection stage may hand to the recognition stage before it has to
         // wait for it (see RecognitionStage).
         private const val MAX_QUEUED_BATCHES = 2
+
+        // Faces the square keeps track of at a time.
+        private const val RECENT_FACES = 12
 
         private const val REFINE_PHOTOS_PER_ROUND = 24
         private const val MAX_CONSECUTIVE_FAILURES = 20
