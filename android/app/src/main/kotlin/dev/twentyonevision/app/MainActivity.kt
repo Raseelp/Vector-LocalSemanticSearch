@@ -11,6 +11,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.media.MediaMetadataRetriever
+import dev.twentyonevision.app.embedder.faces.FaceImageLoader
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 
@@ -1106,6 +1107,60 @@ class MainActivity : FlutterActivity() {
                             "stage" to p.stage, "faces" to p.faces, "total" to p.total, "more" to p.more,
                             "video" to p.video, "step" to p.step, "steps" to p.steps, "relax" to p.relax,
                         )
+                    }
+                }
+
+                // What this phone's processor is called, for the marking on the chip in the Library.
+                "deviceChip" -> {
+                    val soc = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                    val cores = Runtime.getRuntime().availableProcessors()
+                    // The fastest core's top speed, where the system lets an app read it.
+                    var maxKhz = 0L
+                    for (i in 0 until cores) {
+                        try {
+                            val khz = java.io.File("/sys/devices/system/cpu/cpu$i/cpufreq/cpuinfo_max_freq")
+                                .readText().trim().toLong()
+                            if (khz > maxKhz) maxKhz = khz
+                        } catch (_: Exception) {
+                        }
+                    }
+                    val memory = android.app.ActivityManager.MemoryInfo()
+                    (getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager)
+                        .getMemoryInfo(memory)
+                    result.success(
+                        mapOf(
+                            "maker" to (if (soc) Build.SOC_MANUFACTURER else ""),
+                            "model" to (if (soc) Build.SOC_MODEL else ""),
+                            "hardware" to Build.HARDWARE,
+                            "cores" to cores,
+                            "abi" to (Build.SUPPORTED_ABIS.firstOrNull() ?: ""),
+                            "maxMhz" to (maxKhz / 1000).toInt(),
+                            "ramMb" to (memory.totalMem / (1024 * 1024)).toInt(),
+                            "release" to Build.VERSION.RELEASE,
+                        )
+                    )
+                }
+
+                // A photo turned upright by its EXIF tag (as the face finder sees it), small, for
+                // drawing the boxes the face scan found on it.
+                "loadUprightPhoto" -> {
+                    val uriString = call.argument<String>("uri")
+                    val maxSide = (call.argument<Number>("maxSide") ?: 360).toInt().coerceAtLeast(64)
+                    if (uriString == null) {
+                        result.error("NO_URI", "URI missing", null)
+                        return@setMethodCallHandler
+                    }
+                    faceCropExecutor.execute {
+                        try {
+                            val bitmap = FaceImageLoader.load(applicationContext, android.net.Uri.parse(uriString), maxSide)
+                                ?: throw Exception("Cannot decode image")
+                            val output = ByteArrayOutputStream()
+                            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, output)
+                            bitmap.recycle()
+                            runOnUiThread { result.success(output.toByteArray()) }
+                        } catch (e: Throwable) {
+                            runOnUiThread { result.error("LOAD_FAILED", e.message ?: e.toString(), null) }
+                        }
                     }
                 }
 

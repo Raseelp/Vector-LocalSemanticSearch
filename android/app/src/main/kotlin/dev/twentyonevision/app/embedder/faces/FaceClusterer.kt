@@ -298,18 +298,28 @@ class FaceClusterer(private val context: Context, private val store: FaceStore) 
 
     // ---- assigning new faces ----
 
-    /** Places the faces of one just-processed photo, best first, creating people as needed. */
-    fun assignPhotoFaces(photoHash: Long, ids: List<Long>, rows: List<FaceRow>) = synchronized(lock) {
+    /** Who a face was placed with: [isNew] when it started that person, [photos] their photos now. */
+    class Placement(val personId: Long, val isNew: Boolean, val photos: Int)
+
+    /**
+     * Places the faces of one just-processed photo, best first, creating people as needed.
+     * Returns, for each of [ids], who it was placed with (null if nobody).
+     */
+    fun assignPhotoFaces(photoHash: Long, ids: List<Long>, rows: List<FaceRow>): List<Placement?> = synchronized(lock) {
         val state = state()
         val cfg = config
         val order = ids.indices.sortedByDescending { rows[it].rank }
+        val placed = arrayOfNulls<Placement>(ids.size)
 
         for (i in order) {
             val row = rows[i]
             // Found but not recognised yet (an empty vector): it is placed in pass 2.
             if (row.embedding.isEmpty()) continue
-            place(state, cfg, photoHash, ids[i], row.embedding, row.good, row.rank)
+            val before = state.size
+            val person = place(state, cfg, photoHash, ids[i], row.embedding, row.good, row.rank) ?: continue
+            placed[i] = Placement(person, state.size > before, state[person]?.photos?.size ?: 1)
         }
+        placed.toList()
     }
 
     /**

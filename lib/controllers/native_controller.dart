@@ -116,6 +116,7 @@ class NativeController extends GetxController with WidgetsBindingObserver {
 
   @override
   void onClose() {
+    _thumbUpdateTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     searchFocusNode.dispose();
     super.onClose();
@@ -311,8 +312,28 @@ class NativeController extends GetxController with WidgetsBindingObserver {
   // progress tick, and fetching a thumbnail for every single one would
   // compete with the scan itself for I/O/CPU. One fetch per tick keeps the
   // strip feeling alive without adding meaningful load.
-  static const int _maxRecentThumbnails = 8;
-  static const Duration _recentThumbFetchThrottle = Duration(milliseconds: 900);
+  static const int _maxRecentThumbnails = 10;
+  static const Duration _recentThumbFetchThrottle = Duration(milliseconds: 300);
+  // Several are read at once so the square can show a whole round of photos together.
+  static const int _recentThumbParallel = 4;
+  // Thumbnails that arrive together repaint the page once, not once each.
+  Timer? _thumbUpdateTimer;
+
+  void _scheduleThumbUpdate() {
+    if (_thumbUpdateTimer != null) return;
+    _thumbUpdateTimer = Timer(const Duration(milliseconds: 120), () {
+      _thumbUpdateTimer = null;
+      update();
+    });
+  }
+  // While faces follow the scan: how many photos wait for the next face batch, how long since
+  // the last batch ended, the rule they fill towards, and when this was reported.
+  int? faceQueueCount;
+  int faceQueueMs = 0;
+  int faceBatchPhotos = 60;
+  int faceBatchMs = 30000;
+  DateTime faceQueueAt = DateTime.now();
+
   List<RecentEmbeddedItem> recentThumbnails = [];
   final Map<String, Uint8List> recentThumbBytes = {};
   final Set<String> _recentThumbInFlight = {};
@@ -756,9 +777,8 @@ class NativeController extends GetxController with WidgetsBindingObserver {
     return item.isVideo ? '${item.uri}@${item.timestampMs}' : item.uri;
   }
 
-  // items is newest-first. Picks at most one not-yet-fetched item per
-  // throttle window rather than draining the whole list, so a fast scan
-  // can't turn this into a thumbnail-fetch flood.
+  // items is newest-first. Starts the reads of the not-yet-fetched items, a few at a time and
+  // not more often than the throttle, so a fast scan can't turn this into a thumbnail flood.
   void _maybeFetchNextRecentThumbnail(List<RecentEmbeddedItem> items) {
     if (items.isEmpty) return;
 
@@ -768,23 +788,18 @@ class NativeController extends GetxController with WidgetsBindingObserver {
       return;
     }
 
-    RecentEmbeddedItem? next;
+    var started = 0;
     for (final item in items) {
+      if (_recentThumbInFlight.length >= _recentThumbParallel) break;
       final key = _recentThumbKey(item);
-      if (!recentThumbBytes.containsKey(key) &&
-          !_recentThumbInFlight.contains(key)) {
-        next = item;
-        break;
+      if (recentThumbBytes.containsKey(key) || _recentThumbInFlight.contains(key)) {
+        continue;
       }
+      _recentThumbInFlight.add(key);
+      _fetchRecentThumbnail(item, key);
+      started++;
     }
-    if (next == null) return;
-
-    _lastRecentThumbFetch = now;
-    final item = next;
-    final key = _recentThumbKey(item);
-    _recentThumbInFlight.add(key);
-
-    _fetchRecentThumbnail(item, key);
+    if (started > 0) _lastRecentThumbFetch = now;
   }
 
   Future<void> _fetchRecentThumbnail(
@@ -814,7 +829,7 @@ class NativeController extends GetxController with WidgetsBindingObserver {
           recentThumbBytes.remove(_recentThumbKey(removed));
         }
       }
-      update();
+      _scheduleThumbUpdate();
     } catch (_) {
       // Cosmetic feature - never worth surfacing an error for a missed thumbnail.
     } finally {
@@ -995,6 +1010,16 @@ class NativeController extends GetxController with WidgetsBindingObserver {
       }
       _previousProgress = newResult;
       scanResult = newResult;
+      final queued = data['faceQueue'];
+      if (!newResult.done && queued is num) {
+        faceQueueCount = queued.toInt();
+        faceQueueMs = (data['faceQueueMs'] as num?)?.toInt() ?? 0;
+        faceBatchPhotos = (data['faceBatchPhotos'] as num?)?.toInt() ?? 60;
+        faceBatchMs = (data['faceBatchMs'] as num?)?.toInt() ?? 30000;
+        faceQueueAt = DateTime.now();
+      } else {
+        faceQueueCount = null;
+      }
       _maybeFetchNextRecentThumbnail(newResult.recentItems);
       _maybeRefreshLibraryStatsLive();
 
@@ -1327,15 +1352,22 @@ class NativeController extends GetxController with WidgetsBindingObserver {
   // one - an ETA that jumps around every time the recent rate wobbles would
   // be more distracting than useful. Null until there's enough data to
   // bother estimating from.
-  String? get scanEtaText {
+  // Milliseconds indexing has left at the speed so far; null until enough has been done
+  // for the figure to mean something (the first few seconds are not typical).
+  int? get scanEtaMs {
     if (!isScanning) return null;
     final total = scanResult.total;
     final processed = scanResult.processed;
-    if (total <= 0 || processed <= 0 || processed >= total) return null;
+    if (total <= 0 || processed < 20 || processed >= total) return null;
+    if (scanResult.elapsedMs < 8000) return null;
 
     final msPerItem = scanResult.elapsedMs / processed;
-    final remainingMs = (msPerItem * (total - processed)).round();
-    return formatDuration(milliseconds: remainingMs);
+    return (msPerItem * (total - processed)).round();
+  }
+
+  String? get scanEtaText {
+    final ms = scanEtaMs;
+    return ms == null ? null : formatDuration(milliseconds: ms);
   }
 
   String formatDuration({required num milliseconds}) {

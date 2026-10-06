@@ -1,19 +1,20 @@
 import 'dart:async';
-import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:twentyonevision/controllers/faces_controller.dart';
 import 'package:twentyonevision/controllers/native_controller.dart';
 import 'package:twentyonevision/models/indexed_folder_model.dart';
 import 'package:twentyonevision/models/model_status.dart';
-import 'package:twentyonevision/services/native_services.dart';
 import 'package:twentyonevision/utils/app_colors.dart';
 import 'package:twentyonevision/utils/app_radius.dart';
 import 'package:twentyonevision/utils/app_spacing.dart';
 import 'package:twentyonevision/utils/floating_bar.dart';
 import 'package:twentyonevision/view/widget/confirm_dialog.dart';
+import 'package:twentyonevision/services/native_services.dart';
+import 'package:twentyonevision/view/widget/library_orbit.dart';
+import 'package:twentyonevision/view/widget/scan_square.dart';
 
 class LibraryTab extends StatelessWidget {
   const LibraryTab({super.key, required this.controller});
@@ -22,6 +23,7 @@ class LibraryTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scanning = controller.isScanning;
     return SingleChildScrollView(
       padding: EdgeInsets.fromLTRB(
         AppSpacing.xl,
@@ -32,46 +34,46 @@ class LibraryTab extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _StatsRow(controller: controller),
-          const SizedBox(height: AppSpacing.lg),
-          if (controller.isScanning) ...[
-            _IndexingSection(controller: controller),
-          ] else ...[
-            if (controller.scanSummary != null) ...[
-              _ScanCompleteCard(
-                key: ValueKey(controller.scanSummary),
-                summary: controller.scanSummary!,
-                onDismiss: controller.dismissScanSummary,
-              ),
-              const SizedBox(height: AppSpacing.base),
-            ],
-            if (controller.interruptedScan != null) ...[
-              _InterruptedScanBanner(controller: controller),
-              const SizedBox(height: AppSpacing.base),
-            ],
-            _ScanScopeChip(controller: controller),
-            const SizedBox(height: AppSpacing.base),
-            Row(
-              children: [
-                Expanded(
-                  child: _PillAction(
-                    label: 'Index phone',
-                    filled: true,
-                    onTap: () => _startDeviceScan(context, controller),
-                  ),
-                ),
-                const SizedBox(width: AppSpacing.sm),
-                Expanded(
-                  child: _PillAction(
-                    label: 'Choose folder',
-                    filled: false,
-                    onTap: () =>
-                        controller.pickAndScanFolders(isScanEntirePhone: false),
-                  ),
-                ),
-              ],
+          // The chip stays where it is through idle, scanning and done: only what is on it
+          // (and what is written under it) changes.
+          _ChipHero(controller: controller),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 340),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 300),
+              child: scanning
+                  ? _ScanningControls(
+                      key: const ValueKey('scanning'),
+                      controller: controller,
+                    )
+                  : _IdleControls(
+                      key: const ValueKey('idle'),
+                      controller: controller,
+                    ),
             ),
-          ],
+          ),
+          const SizedBox(height: AppSpacing.xl),
+          // The three tiles, just above the folders; they fold into one quiet line while a
+          // scan runs.
+          AnimatedSize(
+            duration: const Duration(milliseconds: 320),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 320),
+              child: scanning
+                  ? _SlimStats(
+                      key: const ValueKey('slim'),
+                      controller: controller,
+                    )
+                  : _StatsRow(
+                      key: const ValueKey('tiles'),
+                      controller: controller,
+                    ),
+            ),
+          ),
           if (controller.allIndexedFoldersList.isNotEmpty) ...[
             const SizedBox(height: AppSpacing.xxl),
             Text(
@@ -90,16 +92,83 @@ class LibraryTab extends StatelessWidget {
       ),
     );
   }
+}
 
-  Future<void> _startDeviceScan(
-    BuildContext context,
-    NativeController controller,
-  ) async {
-    final granted = await controller.requestMediaPermission(
-      contentMode: controller.selectedContentMode,
+Future<void> _startDeviceScan(
+  BuildContext context,
+  NativeController controller,
+) async {
+  final granted = await controller.requestMediaPermission(
+    contentMode: controller.selectedContentMode,
+  );
+  if (!granted) return;
+  controller.pickAndScanFolders(isScanEntirePhone: true);
+}
+
+// Before a scan (and after one): the choices under the chip.
+class _IdleControls extends StatelessWidget {
+  const _IdleControls({super.key, required this.controller});
+
+  final NativeController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: AppSpacing.base),
+        if (controller.interruptedScan != null) ...[
+          _InterruptedScanBanner(controller: controller),
+          const SizedBox(height: AppSpacing.base),
+        ],
+        _ScanScopeChip(controller: controller),
+        const SizedBox(height: AppSpacing.sm),
+        Center(
+          child: OrbitPill(
+            label: 'Choose folder',
+            icon: Icons.folder_open_rounded,
+            onTap: () =>
+                controller.pickAndScanFolders(isScanEntirePhone: false),
+          ),
+        ),
+      ],
     );
-    if (!granted) return;
-    controller.pickAndScanFolders(isScanEntirePhone: true);
+  }
+}
+
+// What the tiles say, in one line, while a scan is running.
+class _SlimStats extends StatelessWidget {
+  const _SlimStats({super.key, required this.controller});
+
+  final NativeController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final parts = <String>[
+      '${controller.totalImages} images',
+      '${controller.totalVideos} videos',
+      '${controller.allIndexedFoldersList.length} folders',
+      if (controller.totalFailed > 0) '${controller.totalFailed} failed',
+    ];
+    return Container(
+      alignment: Alignment.center,
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.base,
+        vertical: AppSpacing.sm,
+      ),
+      decoration: BoxDecoration(
+        color: AppColors.parchment,
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+      ),
+      child: Text(
+        parts.join('  ·  '),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(
+          context,
+        ).textTheme.bodySmall?.copyWith(color: AppColors.ink80),
+      ),
+    );
   }
 }
 
@@ -111,7 +180,7 @@ class LibraryTab extends StatelessWidget {
 // when it was last scanned, rather than competing for the same visual
 // weight as the tiles above it.
 class _StatsRow extends StatelessWidget {
-  const _StatsRow({required this.controller});
+  const _StatsRow({super.key, required this.controller});
 
   final NativeController controller;
 
@@ -182,7 +251,9 @@ class _StatsFooter extends StatelessWidget {
     final parts = <String>['${controller.totalEmbeddings} embeddings'];
 
     if (controller.indexSizeBytes > 0) {
-      parts.add('${ModelDownloadProgress.formatBytes(controller.indexSizeBytes)} on device');
+      parts.add(
+        '${ModelDownloadProgress.formatBytes(controller.indexSizeBytes)} on device',
+      );
     }
 
     final lastScan = _lastScanTime(controller.allIndexedFoldersList);
@@ -196,7 +267,9 @@ class _StatsFooter extends StatelessWidget {
         parts.join('  ·  '),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppColors.ink48),
+        style: Theme.of(
+          context,
+        ).textTheme.bodySmall?.copyWith(color: AppColors.ink48),
       ),
     );
   }
@@ -204,7 +277,9 @@ class _StatsFooter extends StatelessWidget {
 
 DateTime? _lastScanTime(List<IndexedFolder> folders) {
   if (folders.isEmpty) return null;
-  final latest = folders.map((f) => f.updatedAt).reduce((a, b) => a > b ? a : b);
+  final latest = folders
+      .map((f) => f.updatedAt)
+      .reduce((a, b) => a > b ? a : b);
   if (latest <= 0) return null;
   return DateTime.fromMillisecondsSinceEpoch(latest);
 }
@@ -261,49 +336,6 @@ class _StatTile extends StatelessWidget {
             ).textTheme.bodySmall?.copyWith(color: AppColors.ink48),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _PillAction extends StatelessWidget {
-  const _PillAction({
-    required this.label,
-    required this.filled,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool filled;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
-        child: Container(
-          padding: const EdgeInsets.symmetric(
-            vertical: AppSpacing.md,
-            horizontal: AppSpacing.sm,
-          ),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: filled ? AppColors.primary : Colors.transparent,
-            borderRadius: BorderRadius.circular(AppRadius.pill),
-            border: filled ? null : Border.all(color: AppColors.hairline),
-          ),
-          child: Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-              color: filled ? AppColors.onPrimary : AppColors.ink,
-            ),
-          ),
-        ),
       ),
     );
   }
@@ -512,17 +544,14 @@ class _ScopeOption extends StatelessWidget {
   }
 }
 
-class _IndexingSection extends StatelessWidget {
-  const _IndexingSection({required this.controller});
+// The chip at the top of the page: waiting to be started, scanning (indexing's progress, the
+// photos being read and the queue of those waiting for their faces, and when indexing stops
+// to find the faces of a batch the faces lifted out of their photos and placed among the
+// people), or done. It is one widget for all three, so the chip itself never moves.
+class _ChipHero extends StatelessWidget {
+  const _ChipHero({required this.controller});
 
   final NativeController controller;
-
-  String get _speedLabel {
-    final perSecond = controller.recentEmbeddingsPerSecond;
-    if (perSecond <= 0) return 'measuring speed';
-    if (perSecond >= 1) return '${perSecond.toStringAsFixed(1)}/sec';
-    return '${(1000 / perSecond).round()}ms/item';
-  }
 
   // Before a total is known, native is still walking the picked folder
   // (a whole-device scan skips this phase entirely - see ScanProgress.path)
@@ -536,484 +565,147 @@ class _IndexingSection extends StatelessWidget {
     return int.tryParse(match.group(0)!);
   }
 
+  String _thumbKey(RecentEmbeddedItem item) =>
+      item.isVideo ? '${item.uri}@${item.timestampMs}' : item.uri;
+
   @override
   Widget build(BuildContext context) {
+    // Indexing and finding faces take turns: every so many photos, indexing waits
+    // while their faces are found. The chip shows whichever is happening right now.
+    if (!Get.isRegistered<FacesController>()) return _body(context, null);
+    return GetBuilder<FacesController>(
+      builder: (faces) => _body(context, faces),
+    );
+  }
+
+  Widget _body(BuildContext context, FacesController? faces) {
     final scan = controller.scanResult;
+    final summary = controller.scanSummary;
+    final mode = controller.isScanning
+        ? ScanChipMode.scanning
+        : summary != null
+        ? ScanChipMode.complete
+        : ScanChipMode.idle;
     final progress = scan.total == 0
         ? 0.0
         : (scan.processed / scan.total).clamp(0.0, 1.0);
     final percent = (progress * 100).round();
-    final etaText = controller.scanEtaText;
-
-    // Indexing and finding faces take turns: every so many photos, indexing waits
-    // while their faces are found. The card shows whichever is happening right now.
-    return GetBuilder<FacesController>(
-      builder: (faces) => _buildCard(context, scan, progress, percent, etaText, faces.status),
-    );
-  }
-
-  Widget _buildCard(
-    BuildContext context,
-    IndexedFolder scan,
-    double progress,
-    int percent,
-    String? etaText,
-    FaceStatus faceStatus,
-  ) {
+    final faceStatus = faces?.status ?? FaceStatus();
     final findingFaces = faceStatus.running && faceStatus.batch;
     final tuning = findingFaces && faceStatus.phase == 'tune';
     final faceFraction = faceStatus.total <= 0
         ? 0.0
         : (faceStatus.processed / faceStatus.total).clamp(0.0, 1.0);
-    final muted = Theme.of(context).textTheme.bodySmall?.copyWith(
-      color: AppColors.ink48,
-      fontWeight: FontWeight.w600,
-    );
+    final photos = [
+      for (final item in controller.recentThumbnails)
+        OrbitPhoto(
+          id: _thumbKey(item),
+          bytes: controller.recentThumbBytes[_thumbKey(item)],
+        ),
+    ];
 
+    final semantics = switch (mode) {
+      ScanChipMode.idle => 'Index phone',
+      ScanChipMode.complete =>
+        'Scan complete, ${summary?.indexed ?? 0} indexed. Tap to dismiss',
+      ScanChipMode.scanning =>
+        findingFaces
+            ? (tuning
+                  ? 'Optimising face search for your phone'
+                  : 'Finding faces, ${faceStatus.processed} of ${faceStatus.total} photos')
+            : scan.total == 0
+            ? 'Preparing to index'
+            : 'Indexing $percent percent, ${scan.processed} of ${scan.total}',
+    };
+
+    return SquareScanHero(
+      mode: mode,
+      onStart: () => _startDeviceScan(context, controller),
+      onDismiss: controller.dismissScanSummary,
+      summary: summary == null
+          ? null
+          : ScanChipSummary(
+              indexed: summary.indexed,
+              failed: summary.failed,
+              people: faceStatus.people,
+            ),
+      progress: scan.total == 0 ? null : progress,
+      stats: ScanChipStats(
+        indexed: scan.processed,
+        total: scan.total,
+        found: scan.total == 0 ? _foundSoFarCount(scan) : null,
+        faceDone: faceStatus.processed,
+        faceTotal: faceStatus.total,
+        people: faceStatus.people,
+        tuning: tuning,
+        etaMs: controller.scanEtaMs,
+      ),
+      photos: photos,
+      events: findingFaces && !tuning ? faceStatus.recentFaceEvents : const [],
+      discovered: scan.total == 0 ? _foundSoFarCount(scan) : null,
+      queue: controller.faceQueueCount == null
+          ? null
+          : OrbitQueueInfo(
+              count: controller.faceQueueCount!,
+              ms: controller.faceQueueMs,
+              photos: controller.faceBatchPhotos,
+              windowMs: controller.faceBatchMs,
+              at: controller.faceQueueAt,
+            ),
+      loadPhoto: (uri) => NativeServices()
+          .loadUprightPhoto(uri)
+          .then<Uint8List?>((bytes) => bytes)
+          .catchError((_) => null),
+      rate: controller.recentEmbeddingsPerSecond,
+      faceMode: mode == ScanChipMode.scanning && findingFaces,
+      faceProgress: tuning ? null : faceFraction,
+      semanticsLabel: semantics,
+    );
+  }
+}
+
+// While a scan runs: the controls under the chip.
+class _ScanningControls extends StatelessWidget {
+  const _ScanningControls({super.key, required this.controller});
+
+  final NativeController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!Get.isRegistered<FacesController>()) return _body(context, null);
+    return GetBuilder<FacesController>(
+      builder: (faces) => _body(context, faces),
+    );
+  }
+
+  Widget _body(BuildContext context, FacesController? faces) {
+    final textTheme = Theme.of(context).textTheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Container(
-          padding: const EdgeInsets.all(AppSpacing.base),
-          decoration: BoxDecoration(
-            color: AppColors.parchment,
-            borderRadius: BorderRadius.circular(AppRadius.lg),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    findingFaces
-                        ? (tuning ? 'Optimising' : 'Finding faces')
-                        : '$percent%',
-                    style: Theme.of(context).textTheme.headlineSmall,
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                  if (findingFaces && !tuning && faceStatus.total > 0)
-                    Expanded(
-                      child: Text(
-                        '${faceStatus.processed} / ${faceStatus.total}',
-                        textAlign: TextAlign.right,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: muted,
-                      ),
-                    )
-                  else if (!findingFaces && scan.total > 0)
-                    Expanded(
-                      child: Text(
-                        '${scan.processed} / ${scan.total}',
-                        textAlign: TextAlign.right,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: muted,
-                      ),
-                    ),
-                ],
-              ),
-              if (scan.total == 0) ...[
-                const SizedBox(height: AppSpacing.xs),
-                // Its own full-width line rather than squeezed next to the
-                // percent above - a folder that takes a while to enumerate
-                // can report a count here, and it needs the room. The
-                // number itself animates up to each new value instead of
-                // jumping, so it visibly moves even between the roughly
-                // half-second gaps native's own updates arrive at.
-                _FoundSoFarLabel(count: _foundSoFarCount(scan)),
-              ],
-              const SizedBox(height: AppSpacing.sm),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(AppRadius.pill),
-                child: scan.total == 0
-                    ? const _ScanningPulseBar()
-                    : LinearProgressIndicator(
-                        minHeight: 6,
-                        // Faces: how far through this batch; a one-off speed test has
-                        // no end to show. Otherwise indexing's own progress.
-                        value: findingFaces
-                            ? (tuning ? null : faceFraction)
-                            : progress,
-                        backgroundColor: AppColors.hairline,
-                        valueColor: const AlwaysStoppedAnimation<Color>(
-                          AppColors.primary,
-                        ),
-                      ),
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              if (findingFaces)
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        tuning
-                            ? 'One-time speed test, about a minute'
-                            : 'Indexing carries on right after',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: muted,
-                      ),
-                    ),
-                    if (scan.total > 0) ...[
-                      const SizedBox(width: AppSpacing.sm),
-                      Text(
-                        '${scan.processed} / ${scan.total} indexed',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: muted,
-                      ),
-                    ],
-                  ],
-                )
-              else ...[
-                Row(
-                  children: [
-                    Text(
-                      _speedLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: muted,
-                    ),
-                    if (etaText != null) ...[
-                      const SizedBox(width: AppSpacing.sm),
-                      Expanded(
-                        child: Text(
-                          '$etaText left',
-                          textAlign: TextAlign.right,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: muted,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-                if (faceStatus.following && faceStatus.people > 0) ...[
-                  const SizedBox(height: AppSpacing.xs),
-                  Text(
-                    '${faceStatus.people} ${faceStatus.people == 1 ? 'person' : 'people'} found so far',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: muted,
-                  ),
-                ],
-              ],
-              if (controller.recentThumbnails.isNotEmpty) ...[
-                const SizedBox(height: AppSpacing.base),
-                const Divider(height: 1, color: AppColors.hairline),
-                const SizedBox(height: AppSpacing.base),
-                Text(
-                  'JUST INDEXED',
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: AppColors.ink48,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                _RecentThumbStrip(controller: controller),
-              ],
-            ],
+        const SizedBox(height: AppSpacing.sm),
+        const SizedBox(height: AppSpacing.lg),
+        Center(
+          child: OrbitPill(
+            label: 'Stop indexing',
+            icon: Icons.stop_rounded,
+            onTap: controller.stopScanning,
           ),
         ),
-        const SizedBox(height: AppSpacing.lg),
-        _BackgroundScanBanner(controller: controller),
-        const SizedBox(height: AppSpacing.base),
-        _ScanScopeChip(controller: controller, locked: true),
         const SizedBox(height: AppSpacing.lg),
         Text(
           'Search already works on what\'s finished - this keeps going if you switch apps.',
           textAlign: TextAlign.center,
-          style: Theme.of(
-            context,
-          ).textTheme.bodySmall?.copyWith(color: AppColors.ink48, height: 1.4),
+          style: textTheme.bodySmall?.copyWith(
+            color: AppColors.ink48,
+            height: 1.4,
+          ),
         ),
         const SizedBox(height: AppSpacing.base),
-        _PillAction(
-          label: 'Stop indexing',
-          filled: false,
-          onTap: controller.stopScanning,
-        ),
+        _BackgroundScanBanner(controller: controller),
+        const SizedBox(height: AppSpacing.base),
+        _ScanScopeChip(controller: controller, locked: true),
       ],
-    );
-  }
-}
-
-// Ticks up to each new count instead of jumping straight to it, so the
-// number itself is a source of visible motion between native's updates,
-// not just a value that occasionally gets replaced. Null count (nothing
-// found yet at all) shows "Preparing..." with no animation - there's
-// nothing to count up from yet.
-class _FoundSoFarLabel extends StatelessWidget {
-  const _FoundSoFarLabel({required this.count});
-
-  final int? count;
-
-  @override
-  Widget build(BuildContext context) {
-    final style = Theme.of(context).textTheme.bodySmall?.copyWith(
-      color: AppColors.ink48,
-      fontWeight: FontWeight.w600,
-    );
-
-    if (count == null) {
-      return Text(
-        'Preparing...',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: style,
-      );
-    }
-
-    return TweenAnimationBuilder<int>(
-      tween: IntTween(end: count!),
-      duration: const Duration(milliseconds: 500),
-      curve: Curves.easeOut,
-      builder: (context, value, child) {
-        return Text(
-          'Found $value files so far',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: style,
-        );
-      },
-    );
-  }
-}
-
-// Stands in for the plain indeterminate bar while a folder's still being
-// enumerated - a row of small bars whose brightness ripples across them
-// in a wave, like a calm audio equalizer rather than a scanner sweep.
-// Nothing here ever changes position - only color/brightness does - which
-// is what makes it comfortable to watch for a while: a moving element
-// (an earlier version swept a highlight across the whole track; another
-// pulsed the entire bar in and out) reads as flickery/dizzying much
-// faster than a fixed shape that's simply breathing.
-class _ScanningPulseBar extends StatefulWidget {
-  const _ScanningPulseBar();
-
-  @override
-  State<_ScanningPulseBar> createState() => _ScanningPulseBarState();
-}
-
-class _ScanningPulseBarState extends State<_ScanningPulseBar>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-
-  static const _barCount = 5;
-  static const _gap = 3.0;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1800),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 6,
-      width: double.infinity,
-      child: AnimatedBuilder(
-        animation: _controller,
-        builder: (context, _) {
-          return Row(
-            children: List.generate(_barCount * 2 - 1, (i) {
-              if (i.isOdd) return const SizedBox(width: _gap);
-
-              final barIndex = i ~/ 2;
-              // Each bar's brightness follows its own sine wave, phase-
-              // shifted from its neighbors so the bright point appears to
-              // travel across the row - purely a color change per bar,
-              // never a moving shape.
-              final phase = barIndex / _barCount;
-              final t = (_controller.value + phase) % 1.0;
-              final brightness = (math.sin(t * 2 * math.pi) + 1) / 2;
-
-              return Expanded(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: Color.lerp(
-                      AppColors.hairline,
-                      AppColors.primary,
-                      0.25 + 0.65 * brightness,
-                    ),
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                  child: const SizedBox(height: 6),
-                ),
-              );
-            }),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _RecentThumbStrip extends StatelessWidget {
-  const _RecentThumbStrip({required this.controller});
-
-  final NativeController controller;
-
-  String _keyFor(RecentEmbeddedItem item) =>
-      item.isVideo ? '${item.uri}@${item.timestampMs}' : item.uri;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 58,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        itemCount: controller.recentThumbnails.length,
-        separatorBuilder: (_, _) => const SizedBox(width: AppSpacing.sm),
-        itemBuilder: (context, index) {
-          final item = controller.recentThumbnails[index];
-          final key = _keyFor(item);
-          return _RecentThumbTile(
-            key: ValueKey(key),
-            bytes: controller.recentThumbBytes[key],
-            isVideo: item.isVideo,
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _RecentThumbTile extends StatefulWidget {
-  const _RecentThumbTile({
-    super.key,
-    required this.bytes,
-    required this.isVideo,
-  });
-
-  final Uint8List? bytes;
-  final bool isVideo;
-
-  @override
-  State<_RecentThumbTile> createState() => _RecentThumbTileState();
-}
-
-class _RecentThumbTileState extends State<_RecentThumbTile>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  late final Animation<double> _scale;
-  late final Animation<double> _fade;
-  late final Animation<double> _ringOpacity;
-
-  @override
-  void initState() {
-    super.initState();
-    // Plays once when this tile's key first enters the strip - an existing
-    // tile that just gets repositioned is never recreated, so it never
-    // re-plays this. A small overshoot on the scale plus a fading accent
-    // ring gives each new arrival a brief "just landed" moment instead of
-    // a flat fade-in.
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 850),
-    );
-    _scale = Tween<double>(begin: 0.55, end: 1).animate(
-      CurvedAnimation(
-        parent: _controller,
-        curve: const Interval(0, 0.55, curve: Curves.easeOutBack),
-      ),
-    );
-    _fade = CurvedAnimation(
-      parent: _controller,
-      curve: const Interval(0, 0.35, curve: Curves.easeOut),
-    );
-    _ringOpacity = Tween<double>(begin: 1, end: 0).animate(
-      CurvedAnimation(
-        parent: _controller,
-        curve: const Interval(0.15, 1, curve: Curves.easeOut),
-      ),
-    );
-    _controller.forward();
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        return Opacity(
-          opacity: _fade.value,
-          child: Transform.scale(
-            scale: _scale.value,
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                child!,
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: Opacity(
-                      opacity: _ringOpacity.value,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(AppRadius.md + 3),
-                          border: Border.all(
-                            color: AppColors.primary,
-                            width: 2,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        child: SizedBox(
-          width: 58,
-          height: 58,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              widget.bytes == null
-                  ? const ColoredBox(color: AppColors.canvas)
-                  : Image.memory(
-                      widget.bytes!,
-                      fit: BoxFit.cover,
-                      cacheWidth: 116,
-                      cacheHeight: 116,
-                    ),
-              if (widget.isVideo)
-                Container(
-                  alignment: Alignment.center,
-                  color: Colors.black.withValues(alpha: 0.16),
-                  child: const Icon(
-                    Icons.play_arrow_rounded,
-                    color: Colors.white,
-                    size: 18,
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }
@@ -1091,207 +783,16 @@ class _BackgroundScanBanner extends StatelessWidget {
             child: Text(
               'Big libraries index fastest with the app open - background '
               'scanning works best in short stretches.',
-              style: Theme.of(
-                context,
-              ).textTheme.bodySmall?.copyWith(color: AppColors.ink48, height: 1.3),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// The moment a scan reaches 100% - instead of the progress card just
-// vanishing back to the idle buttons, a ring draws itself, a check strokes
-// in, pulses radiate out, and the indexed count ticks up. Auto-dismisses
-// after a few seconds (or on tap of the X).
-class _ScanCompleteCard extends StatefulWidget {
-  const _ScanCompleteCard({super.key, required this.summary, required this.onDismiss});
-
-  final ScanSummary summary;
-  final VoidCallback onDismiss;
-
-  @override
-  State<_ScanCompleteCard> createState() => _ScanCompleteCardState();
-}
-
-class _ScanCompleteCardState extends State<_ScanCompleteCard>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _anim = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 2000),
-  );
-  Timer? _autoDismiss;
-
-  @override
-  void initState() {
-    super.initState();
-    HapticFeedback.mediumImpact();
-    // The auto-dismiss clock starts when the animation *finishes*, not when
-    // the card is built: the tabs live in an IndexedStack, so if the scan
-    // completes while another tab is showing, this animation is paused until
-    // the Library tab is actually visible - a timer started here would tick
-    // down unseen and remove the card before anyone looked at it.
-    _anim.addStatusListener((status) {
-      if (status == AnimationStatus.completed) {
-        _autoDismiss = Timer(const Duration(seconds: 8), () {
-          if (mounted) widget.onDismiss();
-        });
-      }
-    });
-    _anim.forward();
-  }
-
-  @override
-  void dispose() {
-    _autoDismiss?.cancel();
-    _anim.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final summary = widget.summary;
-    final textTheme = Theme.of(context).textTheme;
-
-    return Container(
-      padding: const EdgeInsets.all(AppSpacing.base),
-      decoration: BoxDecoration(
-        color: AppColors.parchment,
-        borderRadius: BorderRadius.circular(AppRadius.lg),
-      ),
-      child: Row(
-        children: [
-          AnimatedBuilder(
-            animation: _anim,
-            builder: (context, _) {
-              return SizedBox(
-                width: 72,
-                height: 72,
-                child: CustomPaint(painter: _CompletePainter(_anim.value)),
-              );
-            },
-          ),
-          const SizedBox(width: AppSpacing.base),
-          Expanded(
-            child: AnimatedBuilder(
-              animation: _anim,
-              builder: (context, child) {
-                final t = Curves.easeOut.transform(((_anim.value - 0.45) / 0.4).clamp(0.0, 1.0));
-                return Opacity(
-                  opacity: t,
-                  child: Transform.translate(offset: Offset(0, 8 * (1 - t)), child: child),
-                );
-              },
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Scan complete', style: textTheme.titleSmall),
-                  const SizedBox(height: 2),
-                  TweenAnimationBuilder<int>(
-                    tween: IntTween(begin: 0, end: summary.indexed),
-                    duration: const Duration(milliseconds: 1400),
-                    curve: Curves.easeOutCubic,
-                    builder: (context, value, _) => Text(
-                      '$value indexed and searchable',
-                      style: textTheme.bodySmall?.copyWith(color: AppColors.ink80),
-                    ),
-                  ),
-                  if (summary.failed > 0) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      '${summary.failed} couldn\'t be read',
-                      style: textTheme.bodySmall?.copyWith(color: AppColors.ink48),
-                    ),
-                  ],
-                ],
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: AppColors.ink48,
+                height: 1.3,
               ),
             ),
           ),
-          InkWell(
-            onTap: widget.onDismiss,
-            borderRadius: BorderRadius.circular(AppRadius.pill),
-            child: const Padding(
-              padding: EdgeInsets.all(AppSpacing.xs),
-              child: Icon(Icons.close_rounded, size: 16, color: AppColors.ink48),
-            ),
-          ),
         ],
       ),
     );
   }
-}
-
-// One timeline for the whole thing (t in 0..1): the ring sweeps in over the
-// first ~40%, the check strokes over ~35-65%, and two pulse rings expand
-// and fade from ~55% on. The whole mark also settles with a small overshoot.
-class _CompletePainter extends CustomPainter {
-  _CompletePainter(this.t);
-
-  final double t;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = size.center(Offset.zero);
-    final radius = size.width / 2 - 6;
-
-    final scale = Curves.elasticOut.transform((t / 0.5).clamp(0.0, 1.0));
-    canvas.save();
-    canvas.translate(center.dx, center.dy);
-    canvas.scale(0.6 + 0.4 * scale);
-    canvas.translate(-center.dx, -center.dy);
-
-    final track = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 4
-      ..color = AppColors.hairline;
-    canvas.drawCircle(center, radius, track);
-
-    final ringT = Curves.easeInOut.transform((t / 0.4).clamp(0.0, 1.0));
-    final ring = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 4
-      ..strokeCap = StrokeCap.round
-      ..color = AppColors.primary;
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius),
-      -math.pi / 2,
-      2 * math.pi * ringT,
-      false,
-      ring,
-    );
-
-    final checkT = Curves.easeOut.transform(((t - 0.35) / 0.3).clamp(0.0, 1.0));
-    if (checkT > 0) {
-      final path = Path()
-        ..moveTo(size.width * 0.30, size.height * 0.52)
-        ..lineTo(size.width * 0.44, size.height * 0.65)
-        ..lineTo(size.width * 0.71, size.height * 0.36);
-      final metric = path.computeMetrics().first;
-      final check = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 5
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..color = AppColors.primary;
-      canvas.drawPath(metric.extractPath(0, metric.length * checkT), check);
-    }
-    canvas.restore();
-
-    for (var i = 0; i < 2; i++) {
-      final pulseT = ((t - 0.55 - i * 0.15) / 0.45).clamp(0.0, 1.0);
-      if (pulseT <= 0 || pulseT >= 1) continue;
-      final pulse = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..color = AppColors.primary.withValues(alpha: 0.35 * (1 - pulseT));
-      canvas.drawCircle(center, radius * (1 + 0.5 * pulseT), pulse);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_CompletePainter old) => old.t != t;
 }
 
 // Shown in place of the usual scan buttons when a scan was still going the
@@ -1354,7 +855,11 @@ class _InterruptedScanBanner extends StatelessWidget {
             borderRadius: BorderRadius.circular(AppRadius.pill),
             child: const Padding(
               padding: EdgeInsets.all(AppSpacing.xs),
-              child: Icon(Icons.close_rounded, size: 16, color: AppColors.ink48),
+              child: Icon(
+                Icons.close_rounded,
+                size: 16,
+                color: AppColors.ink48,
+              ),
             ),
           ),
           const SizedBox(width: AppSpacing.xs),

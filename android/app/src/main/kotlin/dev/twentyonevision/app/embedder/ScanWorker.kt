@@ -86,6 +86,7 @@ class ScanWorker(
                     embeddingEngine.cancelEmbedding()
                     return@embedImages
                 }
+                val queue = FaceFollower.queueInfo()
                 val map = mapOf(
                     "id" to folderId,
                     "total" to progress.total,
@@ -93,6 +94,12 @@ class ScanWorker(
                     "embedded" to progress.embedded,
                     "elapsedMs" to progress.elapsedMs,
                     "activeMs" to progress.activeMs,
+                    // The photos waiting for the next face batch (null when faces do not follow
+                    // this scan), and the batch rule they fill towards.
+                    "faceQueue" to queue?.first,
+                    "faceQueueMs" to queue?.second,
+                    "faceBatchPhotos" to FaceFollower.BATCH_PHOTOS,
+                    "faceBatchMs" to FaceFollower.BATCH_MS,
                     "skipped" to progress.skipped,
                     "failed" to progress.failed,
                     "done" to progress.done,

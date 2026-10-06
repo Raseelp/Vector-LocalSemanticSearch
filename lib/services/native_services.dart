@@ -283,6 +283,24 @@ class NativeServices {
     return Uint8List.fromList(bytes!);
   }
 
+  static Future<Map<String, dynamic>?>? _deviceChip;
+
+  /// The name of this phone's processor (maker, model, cores, architecture), asked once.
+  Future<Map<String, dynamic>?> deviceChip() => _deviceChip ??= _channel
+      .invokeMapMethod<String, dynamic>('deviceChip')
+      .then<Map<String, dynamic>?>((m) => m)
+      .catchError((_) => null);
+
+  /// A small copy of a photo turned upright (as the face scan sees it), so the boxes it found
+  /// line up with it.
+  Future<Uint8List> loadUprightPhoto(String uri, {int maxSide = 360}) async {
+    final bytes = await _channel.invokeMethod<List<int>>('loadUprightPhoto', {
+      'uri': uri,
+      'maxSide': maxSide,
+    });
+    return Uint8List.fromList(bytes!);
+  }
+
   // ---- Faces ----
 
   static const _faceProgressChannel = EventChannel(
@@ -1084,6 +1102,54 @@ class PersonFace {
   );
 }
 
+/// One face just found by the scan: the photo it is in, where it sits there (fractions of
+/// the photo, so they hold at any size), and who it was placed with.
+class FaceEvent {
+  const FaceEvent({
+    required this.id,
+    required this.photoUri,
+    required this.box,
+    required this.landmarks,
+    required this.score,
+    required this.personId,
+    required this.isNew,
+    required this.personPhotos,
+  });
+
+  final int id;
+  final String photoUri;
+
+  /// left, top, right, bottom.
+  final List<double> box;
+
+  /// Left eye, right eye, nose, left mouth corner, right mouth corner (x, y each).
+  final List<double> landmarks;
+  final double score;
+  final int? personId;
+
+  /// The face started that person.
+  final bool isNew;
+
+  /// How many photos that person is in now.
+  final int personPhotos;
+
+  factory FaceEvent.fromMap(Map<dynamic, dynamic> m) {
+    List<double> floats(Object? v) => [
+      for (final x in (v as List?) ?? const []) (x as num).toDouble(),
+    ];
+    return FaceEvent(
+      id: (m['id'] as num).toInt(),
+      photoUri: m['photo'] as String? ?? '',
+      box: floats(m['box']),
+      landmarks: floats(m['landmarks']),
+      score: (m['score'] as num?)?.toDouble() ?? 0,
+      personId: (m['person'] as num?)?.toInt(),
+      isNew: m['isNew'] as bool? ?? false,
+      personPhotos: (m['photos'] as num?)?.toInt() ?? 1,
+    );
+  }
+}
+
 /// Where the automatic face scan is, plus the current totals.
 class FaceStatus {
   FaceStatus({
@@ -1094,6 +1160,7 @@ class FaceStatus {
     this.phase = 'scan',
     this.following = false,
     this.batch = false,
+    this.recentFaceEvents = const [],
     this.refine = true,
     this.deferredPhotos = 0,
     this.tuning,
@@ -1130,6 +1197,9 @@ class FaceStatus {
   // True while it is finding the faces in a batch of photos indexing has just done
   // (indexing waits meanwhile); processed/total then count that batch.
   final bool batch;
+
+  // The same faces with where each was found and who it joined, newest first.
+  final List<FaceEvent> recentFaceEvents;
 
   // Whether the refining pass is switched on, and how many photos still have
   // faces waiting for it.
@@ -1168,6 +1238,7 @@ class FaceStatus {
     phase: phase,
     following: following,
     batch: batch,
+    recentFaceEvents: recentFaceEvents,
     refine: refine,
     deferredPhotos: deferredPhotos,
     tuning: tuning,
@@ -1211,6 +1282,7 @@ class FaceStatus {
     phase: phase,
     following: following,
     batch: batch,
+    recentFaceEvents: recentFaceEvents,
     refine: previous.refine,
     deferredPhotos: previous.deferredPhotos,
     tuning: previous.tuning,
@@ -1240,6 +1312,10 @@ class FaceStatus {
     phase: m['phase'] as String? ?? 'scan',
     following: m['following'] as bool? ?? false,
     batch: m['batch'] as bool? ?? false,
+    recentFaceEvents: [
+      for (final e in (m['recentFaceEvents'] as List?) ?? const [])
+        FaceEvent.fromMap(e as Map<dynamic, dynamic>),
+    ],
     refine: m['refine'] as bool? ?? true,
     deferredPhotos: (m['deferredPhotos'] as num?)?.toInt() ?? 0,
     tuning: m['tuning'] as String?,

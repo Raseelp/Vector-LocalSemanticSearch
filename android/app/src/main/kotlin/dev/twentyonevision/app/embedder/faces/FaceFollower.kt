@@ -25,13 +25,10 @@ object FaceFollower {
     private const val TAG = "FaceFollower"
 
     // When indexing waits for faces: once this many newly indexed photos have gathered,
-    // or this long has passed since the last time - whichever comes first. The first
-    // time is early, so people show up within the first half-minute; after that the
-    // batches are bigger and further apart, so indexing isn't interrupted constantly.
-    private const val FIRST_BATCH_PHOTOS = 40
-    private const val FIRST_BATCH_MS = 20_000L
-    private const val BATCH_PHOTOS = 150
-    private const val BATCH_MS = 60_000L
+    // or this long has passed since the last time - whichever comes first. The same for
+    // every batch, the first included.
+    const val BATCH_PHOTOS = 60
+    const val BATCH_MS = 30_000L
 
     private val lock = Any()
     private val waiting = ArrayList<IndexedImage>()
@@ -50,6 +47,15 @@ object FaceFollower {
 
     /** True while faces are being found in step with an indexing scan. */
     fun isArmed(): Boolean = armed
+
+    /**
+     * While faces follow the scan: how many photos wait for the next batch, and how long it
+     * is since the last one ended (a batch is due at [BATCH_PHOTOS] photos or [BATCH_MS],
+     * whichever comes first). Null when faces do not follow.
+     */
+    fun queueInfo(): Pair<Int, Long>? = synchronized(lock) {
+        if (!armed) null else waiting.size to (SystemClock.elapsedRealtime() - lastBatchAt)
+    }
 
     fun openForScan() {
         open = true
@@ -97,8 +103,7 @@ object FaceFollower {
             ScanHandoff.consumer = ScanHandoff.Consumer { photos, shouldStop -> onIndexed(app, photos, shouldStop) }
             armed = true
             BenchLog.log(app) {
-                "faces in step with indexing: first batch after $FIRST_BATCH_PHOTOS photos or " +
-                    "${FIRST_BATCH_MS / 1000}s, then every $BATCH_PHOTOS photos or ${BATCH_MS / 1000}s"
+                "faces in step with indexing: a batch every $BATCH_PHOTOS photos or ${BATCH_MS / 1000}s"
             }
             return true
         }
@@ -122,12 +127,9 @@ object FaceFollower {
             current = session ?: return
             if (!armed) return
             waiting += photos
-            val first = batches == 0
-            val enough = if (first) FIRST_BATCH_PHOTOS else BATCH_PHOTOS
-            val waited = if (first) FIRST_BATCH_MS else BATCH_MS
             val now = SystemClock.elapsedRealtime()
-            byCount = waiting.size >= enough
-            val due = byCount || now - lastBatchAt >= waited
+            byCount = waiting.size >= BATCH_PHOTOS
+            val due = byCount || now - lastBatchAt >= BATCH_MS
             if (!due) return
             batch = ArrayList(waiting)
             waiting.clear()
